@@ -1,0 +1,18 @@
+# Go2rtc configuration for VisionGlass NVR
+# Provides ultra-low latency WebRTC, MSE, and RTSP restreaming
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":8555"
+
+webrtc:
+  listen: ":8556"
+
+# Streams can be added dynamically via API or statically configured below:
+streams:
+  # Example:
+  # front_door:
+  #   - rtsp://admin:password@192.168.1.100:554/stream1
+  # ring_doorbell:
+  #   - rtsp://ring-rtsp:8554/front_doorbell

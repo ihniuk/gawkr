@@ -1,0 +1,410 @@
+import asyncio
+import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse, Response, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR
+from app.models import (
+    UserLogin, UserResponse, CameraModel, CameraCreate, CameraUpdate,
+    CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
+    TestStreamRequest, TestStreamResponse
+)
+from app.auth import (
+    authenticate_user, create_access_token, get_current_user, require_admin,
+    create_stream_ticket, verify_stream_ticket
+)
+from app.discovery import discover_network_cameras, verify_camera_credentials, _test_rtsp_stream_cv2
+from app.camera_manager import camera_manager
+from app.notifications import notification_manager
+from app.storage import (
+    load_recent_events_from_db, delete_event_from_db,
+    get_system_settings, save_system_settings, get_storage_disk_stats
+)
+from app.ai_vision import test_ai_vision_connection
+from app.notification_dispatchers import (
+    send_telegram_alert, send_discord_alert, send_slack_alert, send_pushover_alert
+)
+from app.hardware import detect_hardware_capabilities
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize camera manager with the active event loop
+    loop = asyncio.get_running_loop()
+    camera_manager.initialize(loop)
+    
+    # Background task for periodic telemetry broadcast
+    async def telemetry_loop():
+        while True:
+            await asyncio.sleep(2.0)
+            for cam in camera_manager.get_all():
+                worker = camera_manager.get_worker(cam.id)
+                if worker:
+                    telem = worker.get_telemetry()
+                    await notification_manager.send_telemetry_update(telem.model_dump())
+    
+    async def storage_retention_loop():
+        from app.storage import purge_expired_storage
+        while True:
+            try:
+                purge_expired_storage()
+            except Exception as e:
+                print(f"Storage retention worker error: {e}")
+            await asyncio.sleep(1800) # Check every 30 minutes
+    
+    task = asyncio.create_task(telemetry_loop())
+    storage_task = asyncio.create_task(storage_retention_loop())
+    yield
+    # Shutdown
+    task.cancel()
+    storage_task.cancel()
+    camera_manager.shutdown()
+
+app = FastAPI(title="Gawkr AI-NVR Server", version="1.0.0", lifespan=lifespan)
+
+# Allow CORS for local dev servers
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ----------------- AUTHENTICATION -----------------
+
+@app.post("/api/auth/login", response_model=UserResponse)
+async def login(credentials: UserLogin):
+    user = authenticate_user(credentials.username, credentials.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password"
+        )
+    token = create_access_token({"sub": user["username"], "role": user["role"]})
+    return UserResponse(
+        username=user["username"],
+        role=user["role"],
+        token=token
+    )
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(get_current_user)):
+    return {"username": user["username"], "role": user["role"]}
+
+@app.get("/api/auth/stream-ticket/{camera_id}")
+async def get_stream_ticket(camera_id: str, user: dict = Depends(get_current_user)):
+    """Generates an ephemeral, signed stream ticket for zero-unauthorized-access video feeds."""
+    ticket = create_stream_ticket(camera_id, user["username"])
+    return {"ticket": ticket, "camera_id": camera_id}
+
+# ----------------- CAMERAS -----------------
+
+@app.get("/api/cameras")
+async def list_cameras(user: dict = Depends(get_current_user)):
+    cams = camera_manager.get_all()
+    # Mask passwords before sending to frontend
+    res = []
+    for c in cams:
+        d = c.model_dump()
+        d["password"] = "••••••••" if d["password"] else ""
+        res.append(d)
+    return res
+
+@app.post("/api/cameras", response_model=CameraModel)
+async def create_camera(cam: CameraCreate, user: dict = Depends(require_admin)):
+    return camera_manager.add(cam)
+
+@app.get("/api/cameras/{camera_id}")
+async def get_camera(camera_id: str, user: dict = Depends(get_current_user)):
+    cam = camera_manager.get(camera_id)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    d = cam.model_dump()
+    d["password"] = "••••••••" if d["password"] else ""
+    return d
+
+@app.put("/api/cameras/{camera_id}")
+async def update_camera(camera_id: str, update: CameraUpdate, user: dict = Depends(require_admin)):
+    cam = camera_manager.update(camera_id, update)
+    if not cam:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return cam
+
+@app.delete("/api/cameras/{camera_id}")
+async def delete_camera(camera_id: str, user: dict = Depends(require_admin)):
+    success = camera_manager.delete(camera_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    return {"status": "deleted", "camera_id": camera_id}
+
+@app.post("/api/cameras/{camera_id}/restart")
+async def restart_camera(camera_id: str, user: dict = Depends(require_admin)):
+    camera_manager.restart_worker(camera_id)
+    return {"status": "restarted", "camera_id": camera_id}
+
+@app.get("/api/cameras/{camera_id}/telemetry")
+async def get_camera_telemetry(camera_id: str, user: dict = Depends(get_current_user)):
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return worker.get_telemetry()
+
+# ----------------- VIDEO STREAMING & SNAPSHOTS -----------------
+
+@app.get("/api/cameras/{camera_id}/stream")
+async def get_camera_stream(camera_id: str, ticket: str = Query(...)):
+    """
+    High-speed, low-latency multipart/x-mixed-replace JPEG video stream.
+    Protected by signed stream tickets against unauthorized viewing.
+    """
+    if not verify_stream_ticket(ticket, camera_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: Invalid or expired stream ticket"
+        )
+    
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream inactive")
+
+    async def frame_generator():
+        while True:
+            jpeg = worker.get_latest_jpeg()
+            if jpeg:
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+            await asyncio.sleep(0.04) # ~25 FPS non-blocking cooperative async sleep
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+@app.get("/api/cameras/{camera_id}/snapshot")
+async def capture_snapshot(camera_id: str, user: dict = Depends(get_current_user)):
+    """Captures a pristine, high-resolution snapshot frame directly from the main stream."""
+    jpeg = camera_manager.take_snapshot(camera_id)
+    if not jpeg:
+        raise HTTPException(status_code=500, detail="Failed to capture snapshot frame")
+    return Response(content=jpeg, media_type="image/jpeg")
+
+@app.get("/api/snapshots/{filename}")
+async def get_snapshot_file(filename: str):
+    file_path = SNAPSHOTS_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    return FileResponse(str(file_path), media_type="image/jpeg")
+
+@app.get("/api/recordings/{filename}")
+async def get_recording_file(filename: str):
+    """Serves recorded H.264 MP4 clips with HTTP Range seeking support for smooth web playback."""
+    file_path = RECORDINGS_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Recording clip not found or still processing")
+    return FileResponse(str(file_path), media_type="video/mp4")
+
+@app.post("/api/cameras/{camera_id}/test-alert")
+async def trigger_camera_test_alert(camera_id: str, user: dict = Depends(require_admin)):
+    """Triggers an intentional confirmed AI event & video clip on-demand for testing."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    evt = worker.trigger_manual_alert()
+    return {"status": "triggered", "event": evt.model_dump() if evt else None}
+
+# ----------------- DISCOVERY & CREDENTIAL VERIFICATION -----------------
+
+@app.post("/api/discovery/scan")
+async def scan_network_cameras(user: dict = Depends(require_admin)):
+    """
+    Point-and-click network camera scanner:
+    Runs ONVIF WS-Discovery, SSDP and LAN sweeps.
+    """
+    devices = await discover_network_cameras()
+    return {"count": len(devices), "devices": devices}
+
+@app.post("/api/discovery/verify", response_model=CredentialVerifyResponse)
+async def verify_credentials(req: CredentialVerifyRequest, user: dict = Depends(require_admin)):
+    """
+    Tests credentials against a camera, validates profiles, and auto-generates Main/Sub stream URLs.
+    """
+    return await verify_camera_credentials(
+        ip=req.ip,
+        onvif_port=req.onvif_port,
+        rtsp_port=req.rtsp_port,
+        username=req.username,
+        password=req.password
+    )
+
+@app.post("/api/discovery/test-stream", response_model=TestStreamResponse)
+async def test_stream(req: TestStreamRequest, user: dict = Depends(require_admin)):
+    """
+    Tests an individual RTSP stream URL by opening and decoding frames with FFmpeg/CV2.
+    """
+    is_ok, res, fps = await asyncio.to_thread(_test_rtsp_stream_cv2, req.rtsp_url, 2)
+    if is_ok:
+        return TestStreamResponse(
+            success=True,
+            message=f"Stream online and delivering video ({res} @ {fps:.1f} FPS)!",
+            resolution=res,
+            fps=fps
+        )
+    return TestStreamResponse(
+        success=False,
+        message="Could not decode stream. Verify stream URL, port 554, or credentials."
+    )
+
+# ----------------- EVENTS -----------------
+
+@app.get("/api/events")
+async def get_events(
+    limit: int = 150,
+    camera_id: str = None,
+    start_time: float = None,
+    end_time: float = None,
+    user: dict = Depends(get_current_user)
+):
+    return load_recent_events_from_db(
+        limit=limit,
+        camera_id=camera_id,
+        start_time=start_time,
+        end_time=end_time
+    )
+
+@app.delete("/api/events/{event_id}")
+async def delete_event(event_id: str, user: dict = Depends(require_admin)):
+    delete_event_from_db(event_id)
+    return {"status": "deleted", "id": event_id}
+
+# ----------------- SYSTEM SETTINGS & CONTROL PANEL -----------------
+
+@app.get("/api/settings")
+async def get_settings(user: dict = Depends(get_current_user)):
+    """Returns current system configuration and real-time storage disk usage statistics."""
+    settings = get_system_settings()
+    disk_stats = get_storage_disk_stats()
+    return {
+        "settings": settings.model_dump(),
+        "disk_stats": disk_stats
+    }
+
+@app.get("/api/settings/hardware-capabilities")
+async def get_hardware_capabilities(user: dict = Depends(get_current_user)):
+    """Detects CPU cores, NVIDIA GPU presence, Intel QuickSync availability, and active codec engines."""
+    return detect_hardware_capabilities()
+
+@app.put("/api/settings")
+async def update_settings(new_settings: SystemSettings, user: dict = Depends(require_admin)):
+    """Updates storage retention, AI vision credentials, and notification webhooks."""
+    save_system_settings(new_settings)
+    return {
+        "status": "updated",
+        "settings": new_settings.model_dump(),
+        "disk_stats": get_storage_disk_stats()
+    }
+
+@app.post("/api/settings/test-ai-vision")
+async def test_ai_vision(config: AIVisionConfig, user: dict = Depends(require_admin)):
+    """Generates a test frame and runs real-time natural language description via configured AI API."""
+    result = test_ai_vision_connection(config)
+    return result
+
+@app.post("/api/settings/test-notification/{service}")
+async def test_notification(service: str, payload: dict, user: dict = Depends(require_admin)):
+    """Sends an immediate test alert to Telegram, Discord, Slack, or Pushover."""
+    class DummyEvent:
+        camera_name = "Test Camera (Driveway)"
+        timestamp = time.time()
+        threat_level = "Safe"
+        ai_description = "Test alert from Gawkr AI-NVR Server. All notification channels operational!"
+        objects = []
+        
+    try:
+        if service == "telegram":
+            bot_token = payload.get("bot_token")
+            chat_id = payload.get("chat_id")
+            if not bot_token or not chat_id:
+                raise HTTPException(status_code=400, detail="Missing Bot Token or Chat ID")
+            return send_telegram_alert(bot_token, chat_id, DummyEvent())
+
+        elif service == "discord":
+            webhook_url = payload.get("webhook_url")
+            if not webhook_url:
+                raise HTTPException(status_code=400, detail="Missing Discord Webhook URL")
+            return send_discord_alert(webhook_url, DummyEvent())
+
+        elif service == "slack":
+            webhook_url = payload.get("webhook_url")
+            if not webhook_url:
+                raise HTTPException(status_code=400, detail="Missing Slack Webhook URL")
+            return send_slack_alert(webhook_url, DummyEvent())
+
+        elif service == "pushover":
+            user_key = payload.get("user_key")
+            api_token = payload.get("api_token")
+            if not user_key or not api_token:
+                raise HTTPException(status_code=400, detail="Missing Pushover User Key or API Token")
+            return send_pushover_alert(user_key, api_token, DummyEvent())
+
+        elif service == "mqtt":
+            broker = payload.get("broker_url")
+            if not broker:
+                raise HTTPException(status_code=400, detail="Missing MQTT Broker URL (e.g. localhost:1883)")
+            from app.mqtt_client import mqtt_service
+            from app.models import MqttConfig
+            cfg = MqttConfig(**payload)
+            mqtt_service.publish_ha_discovery("test_cam", "Test Security Cam", cfg)
+            return {"success": True, "message": "MQTT connected! Home Assistant discovery published."}
+
+        raise HTTPException(status_code=400, detail=f"Unsupported notification service: {service}")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/settings/purge-storage")
+async def trigger_storage_purge(user: dict = Depends(require_admin)):
+    from app.storage import purge_expired_storage
+    res = purge_expired_storage()
+    return {"status": "ok", "result": res}
+
+# ----------------- DAILY AI BRIEFING -----------------
+
+@app.get("/api/briefing/today")
+async def get_today_briefing(user: dict = Depends(get_current_user)):
+    """Generates or returns 24-hour synthesized AI security intelligence briefing."""
+    from app.daily_briefing import generate_daily_briefing
+    return generate_daily_briefing(hours=24)
+
+@app.post("/api/briefing/generate")
+async def trigger_generate_briefing(user: dict = Depends(require_admin)):
+    """Triggers an on-demand refresh of the AI security digest."""
+    from app.daily_briefing import generate_daily_briefing
+    return generate_daily_briefing(hours=24)
+
+# ----------------- WEBSOCKET ALERTS -----------------
+
+@app.websocket("/api/ws/events")
+async def websocket_events_endpoint(websocket: WebSocket):
+    await notification_manager.connect(websocket)
+    try:
+        while True:
+            # Keepalive listener
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        notification_manager.disconnect(websocket)
+    except Exception:
+        notification_manager.disconnect(websocket)
+
+# ----------------- FRONTEND STATIC SERVING (IF BUILT) -----------------
+dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
+if dist_path.exists():
+    app.mount("/", StaticFiles(directory=str(dist_path), html=True), name="static")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)

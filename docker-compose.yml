@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  # ============================================================
+  # VisionGlass AI-NVR Core (FastAPI Backend + Vite Frontend)
+  # ============================================================
+  nvr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: visionglass-nvr
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/data:/app/data
+      - ./backend/data/snapshots:/app/data/snapshots
+      - ./backend/data/recordings:/app/data/recordings
+    environment:
+      - PORT=8000
+      - TZ=UTC
+    # To enable Intel QuickSync Hardware Acceleration:
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # To enable NVIDIA GPU Acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu, video]
+    networks:
+      - nvr-net
+
+  # ============================================================
+  # Go2rtc: Low-Latency WebRTC & H.264/H.265 Streaming Proxy
+  # ============================================================
+  go2rtc:
+    image: alexxit/go2rtc:latest
+    container_name: visionglass-go2rtc
+    restart: unless-stopped
+    ports:
+      - "1984:1984" # Web UI / API
+      - "8555:8555" # RTSP
+      - "8556:8556" # WebRTC
+    volumes:
+      - ./go2rtc.yaml:/config/go2rtc.yaml
+    networks:
+      - nvr-net
+
+  # ============================================================
+  # Ring RTSP Bridge (Optional: for Amazon Ring Doorbell/Cams)
+  # ============================================================
+  ring-rtsp:
+    image: tsightler/ring-mqtt:latest
+    container_name: visionglass-ring-bridge
+    restart: unless-stopped
+    ports:
+      - "8554:8554" # Ring RTSP stream proxy port
+    volumes:
+      - ./docker/ring-data:/data
+    env_file:
+      - ./docker/ring-mqtt.env
+    networks:
+      - nvr-net
+    profiles:
+      - ring # Start with: docker compose --profile ring up -d
+
+networks:
+  nvr-net:
+    driver: bridge
