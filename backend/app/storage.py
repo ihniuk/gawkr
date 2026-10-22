@@ -3,11 +3,16 @@ import json
 import time
 import shutil
 import os
+import hashlib
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import cv2
 import numpy as np
-from app.config import DATA_DIR, SNAPSHOTS_DIR, RECORDINGS_DIR
+from app.config import (
+    DATA_DIR, SNAPSHOTS_DIR, RECORDINGS_DIR,
+    DEFAULT_ADMIN_USER, DEFAULT_ADMIN_PASS,
+    DEFAULT_VIEWER_USER, DEFAULT_VIEWER_PASS
+)
 from app.models import (
     CameraModel, CameraSettings, DetectionEvent, DetectionObject,
     SystemSettings, StorageConfig, AIVisionConfig, NotificationsConfig
@@ -72,6 +77,27 @@ def init_db():
         value_json TEXT NOT NULL
     );
     """)
+
+    # Users table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        username TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'viewer',
+        created_at REAL NOT NULL
+    );
+    """)
+
+    # Seed default users if table is empty
+    cursor.execute("SELECT COUNT(*) FROM users;")
+    if cursor.fetchone()[0] == 0:
+        now = time.time()
+        admin_hash = hashlib.sha256(DEFAULT_ADMIN_PASS.encode()).hexdigest()
+        viewer_hash = hashlib.sha256(DEFAULT_VIEWER_PASS.encode()).hexdigest()
+        cursor.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                       (DEFAULT_ADMIN_USER, admin_hash, "admin", now))
+        cursor.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                       (DEFAULT_VIEWER_USER, viewer_hash, "viewer", now))
     
     conn.commit()
     conn.close()
@@ -406,5 +432,75 @@ def purge_expired_storage() -> Dict[str, int]:
         "deleted_files": deleted_files,
         "freed_mb": round(freed_bytes / (1024**2), 1)
     }
+
+# ----------------- USERS PERSISTENCE -----------------
+
+def get_user_by_username(username: str) -> Optional[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, password_hash, role, created_at FROM users WHERE username = ?", (username,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "username": row[0],
+        "password_hash": row[1],
+        "role": row[2],
+        "created_at": row[3]
+    }
+
+def list_all_users() -> List[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, role, created_at FROM users ORDER BY created_at ASC")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"username": r[0], "role": r[1], "created_at": r[2]} for r in rows]
+
+def create_user_in_db(username: str, password_hash: str, role: str) -> dict:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    now = time.time()
+    cursor.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+                   (username, password_hash, role, now))
+    conn.commit()
+    conn.close()
+    return {"username": username, "role": role, "created_at": now}
+
+def update_user_password_in_db(username: str, password_hash: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET password_hash = ? WHERE username = ?", (password_hash, username))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+def update_user_role_in_db(username: str, role: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET role = ? WHERE username = ?", (role, username))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+def delete_user_from_db(username: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE username = ?", (username,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
+
+def count_admin_users() -> int:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
 
 init_db()

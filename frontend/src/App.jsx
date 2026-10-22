@@ -273,7 +273,7 @@ export default function App() {
           />
         )}
         {currentTab === 'control_panel' && (
-          <ControlPanel isAdmin={isAdmin} />
+          <ControlPanel isAdmin={isAdmin} currentUser={user} />
         )}
         {currentTab === 'briefing' && (
           <DailyBriefingPage isAdmin={isAdmin} />

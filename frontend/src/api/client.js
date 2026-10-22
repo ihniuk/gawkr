@@ -56,12 +56,55 @@ export const api = {
     return res;
   },
 
+  async changePassword(username, currentPassword, newPassword) {
+    return apiFetch('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        current_password: currentPassword,
+        new_password: newPassword
+      })
+    });
+  },
+
   async getMe() {
     return apiFetch('/auth/me');
   },
 
   async getStreamTicket(cameraId) {
     return apiFetch(`/auth/stream-ticket/${cameraId}`);
+  },
+
+  // User Management
+  async getUsers() {
+    return apiFetch('/users');
+  },
+
+  async createUser(username, password, role = 'viewer') {
+    return apiFetch('/users', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, role })
+    });
+  },
+
+  async resetPassword(username, password) {
+    return apiFetch(`/users/${username}/password`, {
+      method: 'PUT',
+      body: JSON.stringify({ password })
+    });
+  },
+
+  async updateUserRole(username, role) {
+    return apiFetch(`/users/${username}/role`, {
+      method: 'PUT',
+      body: JSON.stringify({ role })
+    });
+  },
+
+  async deleteUser(username) {
+    return apiFetch(`/users/${username}`, {
+      method: 'DELETE'
+    });
   },
 
   // Cameras

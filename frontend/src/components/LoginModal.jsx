@@ -1,10 +1,19 @@
 import React, { useState } from 'react';
-import { Lock, User, Key, X, ShieldCheck, UserCheck } from 'lucide-react';
+import { Lock, User, Key, X, ShieldCheck, UserCheck, CheckCircle } from 'lucide-react';
 import { api } from '../api/client';
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
+  const [activeTab, setActiveTab] = useState('login'); // 'login' | 'reset'
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('admin123');
+  
+  // Password change state
+  const [changeUsername, setChangeUsername] = useState('admin');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
+
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
@@ -14,6 +23,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
     if (e) e.preventDefault();
     setIsLoading(true);
     setErrorMsg('');
+    setSuccessMsg('');
     try {
       const res = await api.login(username, password);
       onLoginSuccess(res);
@@ -30,6 +40,7 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
     setPassword(pass);
     setIsLoading(true);
     setErrorMsg('');
+    setSuccessMsg('');
     api.login(user, pass)
       .then(res => {
         onLoginSuccess(res);
@@ -39,10 +50,42 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
       .finally(() => setIsLoading(false));
   };
 
+  const handleChangePassword = async (e) => {
+    if (e) e.preventDefault();
+    if (!newPassword || newPassword.length < 4) {
+      setErrorMsg('New password must be at least 4 characters');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setErrorMsg('New passwords do not match');
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      await api.changePassword(changeUsername, currentPassword, newPassword);
+      setSuccessMsg('Password updated successfully! You can now log in.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      setUsername(changeUsername);
+      setPassword('');
+      setTimeout(() => {
+        setActiveTab('login');
+      }, 1500);
+    } catch (err) {
+      setErrorMsg(err.message || 'Failed to update password');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <div style={{
               width: '34px',
@@ -63,6 +106,47 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
           <button className="btn-glass" onClick={onClose} style={{ padding: '6px' }}><X size={16} /></button>
         </div>
 
+        {/* Tab switch */}
+        <div style={{
+          display: 'flex',
+          gap: '4px',
+          background: 'rgba(255, 255, 255, 0.04)',
+          borderRadius: '8px',
+          padding: '3px',
+          marginBottom: '14px'
+        }}>
+          <button
+            type="button"
+            className="btn-glass"
+            style={{
+              flex: 1,
+              justifyContent: 'center',
+              fontSize: '0.78rem',
+              padding: '6px',
+              background: activeTab === 'login' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+              color: activeTab === 'login' ? 'var(--accent-cyan)' : 'var(--text-muted)'
+            }}
+            onClick={() => { setActiveTab('login'); setErrorMsg(''); setSuccessMsg(''); }}
+          >
+            Sign In
+          </button>
+          <button
+            type="button"
+            className="btn-glass"
+            style={{
+              flex: 1,
+              justifyContent: 'center',
+              fontSize: '0.78rem',
+              padding: '6px',
+              background: activeTab === 'reset' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+              color: activeTab === 'reset' ? 'var(--accent-cyan)' : 'var(--text-muted)'
+            }}
+            onClick={() => { setActiveTab('reset'); setErrorMsg(''); setSuccessMsg(''); }}
+          >
+            Change Password
+          </button>
+        </div>
+
         {errorMsg && (
           <div style={{
             background: 'rgba(244, 63, 94, 0.12)',
@@ -77,65 +161,145 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
           </div>
         )}
 
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: '12px' }}>
-            <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Username</label>
-            <input
-              type="text"
-              className="glass-input"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
+        {successMsg && (
+          <div style={{
+            background: 'rgba(16, 185, 129, 0.12)',
+            border: '1px solid rgba(16, 185, 129, 0.3)',
+            color: 'var(--accent-emerald)',
+            padding: '8px 12px',
+            borderRadius: '6px',
+            fontSize: '0.82rem',
+            marginBottom: '14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}>
+            <CheckCircle size={14} /> {successMsg}
           </div>
+        )}
 
-          <div style={{ marginBottom: '16px' }}>
-            <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Password</label>
-            <input
-              type="password"
-              className="glass-input"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-          </div>
+        {activeTab === 'login' ? (
+          <>
+            <form onSubmit={handleSubmit}>
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Username</label>
+                <input
+                  type="text"
+                  className="glass-input"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  required
+                />
+              </div>
 
-          <button
-            type="submit"
-            className="btn-primary"
-            style={{ width: '100%', justifyContent: 'center', marginBottom: '14px' }}
-            disabled={isLoading}
-          >
-            {isLoading ? 'Authenticating...' : 'Sign In'}
-          </button>
-        </form>
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Password</label>
+                <input
+                  type="password"
+                  className="glass-input"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+              </div>
 
-        {/* Quick RBAC Switchers */}
-        <div style={{
-          borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-          paddingTop: '12px',
-          textAlign: 'center'
-        }}>
-          <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Quick Login Roles:</span>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '8px' }}>
+              <button
+                type="submit"
+                className="btn-primary"
+                style={{ width: '100%', justifyContent: 'center', marginBottom: '14px' }}
+                disabled={isLoading}
+              >
+                {isLoading ? 'Authenticating...' : 'Sign In'}
+              </button>
+            </form>
+
+            {/* Quick RBAC Switchers */}
+            <div style={{
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+              paddingTop: '12px',
+              textAlign: 'center'
+            }}>
+              <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Quick Login Roles:</span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginTop: '8px' }}>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ justifyContent: 'center', fontSize: '0.76rem' }}
+                  onClick={() => handleQuickLogin('admin', 'admin123')}
+                >
+                  <ShieldCheck size={14} color="var(--accent-cyan)" /> Admin Role
+                </button>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ justifyContent: 'center', fontSize: '0.76rem' }}
+                  onClick={() => handleQuickLogin('viewer', 'viewer123')}
+                >
+                  <UserCheck size={14} color="var(--accent-emerald)" /> User / Viewer
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <form onSubmit={handleChangePassword}>
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Account Username</label>
+              <input
+                type="text"
+                className="glass-input"
+                placeholder="e.g. admin or viewer"
+                value={changeUsername}
+                onChange={(e) => setChangeUsername(e.target.value)}
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Current Password</label>
+              <input
+                type="password"
+                className="glass-input"
+                placeholder="Enter existing password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '10px' }}>
+              <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>New Password (min 4 chars)</label>
+              <input
+                type="password"
+                className="glass-input"
+                placeholder="Enter new password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Confirm New Password</label>
+              <input
+                type="password"
+                className="glass-input"
+                placeholder="Confirm new password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                required
+              />
+            </div>
+
             <button
-              type="button"
-              className="btn-glass"
-              style={{ justifyContent: 'center', fontSize: '0.76rem' }}
-              onClick={() => handleQuickLogin('admin', 'admin123')}
+              type="submit"
+              className="btn-primary"
+              style={{ width: '100%', justifyContent: 'center' }}
+              disabled={isLoading}
             >
-              <ShieldCheck size={14} color="var(--accent-cyan)" /> Admin Role
+              <Key size={14} /> {isLoading ? 'Updating Password...' : 'Update Password'}
             </button>
-            <button
-              type="button"
-              className="btn-glass"
-              style={{ justifyContent: 'center', fontSize: '0.76rem' }}
-              onClick={() => handleQuickLogin('viewer', 'viewer123')}
-            >
-              <UserCheck size={14} color="var(--accent-emerald)" /> User / Viewer
-            </button>
-          </div>
-        </div>
+          </form>
+        )}
       </div>
     </div>
   );

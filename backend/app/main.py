@@ -9,13 +9,15 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR
 from app.models import (
-    UserLogin, UserResponse, CameraModel, CameraCreate, CameraUpdate,
+    UserLogin, UserResponse, UserCreate, UserPasswordReset, UserPasswordChange, UserRoleUpdate, UserItem,
+    CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
     TestStreamRequest, TestStreamResponse
 )
 from app.auth import (
     authenticate_user, create_access_token, get_current_user, require_admin,
-    create_stream_ticket, verify_stream_ticket
+    create_stream_ticket, verify_stream_ticket,
+    list_users, add_new_user, reset_user_password, update_user_role, delete_user
 )
 from app.discovery import discover_network_cameras, verify_camera_credentials, _test_rtsp_stream_cv2
 from app.camera_manager import camera_manager
@@ -91,6 +93,17 @@ async def login(credentials: UserLogin):
         token=token
     )
 
+@app.post("/api/auth/change-password")
+async def self_service_change_password(payload: UserPasswordChange):
+    """Verifies existing credentials and updates the password."""
+    user = authenticate_user(payload.username, payload.current_password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Current username or password incorrect"
+        )
+    return reset_user_password(payload.username, payload.new_password)
+
 @app.get("/api/auth/me")
 async def get_me(user: dict = Depends(get_current_user)):
     return {"username": user["username"], "role": user["role"]}
@@ -100,6 +113,38 @@ async def get_stream_ticket(camera_id: str, user: dict = Depends(get_current_use
     """Generates an ephemeral, signed stream ticket for zero-unauthorized-access video feeds."""
     ticket = create_stream_ticket(camera_id, user["username"])
     return {"ticket": ticket, "camera_id": camera_id}
+
+# ----------------- USER MANAGEMENT -----------------
+
+@app.get("/api/users", response_model=list[UserItem])
+async def get_users_list(user: dict = Depends(get_current_user)):
+    """Lists all registered system users."""
+    return list_users()
+
+@app.post("/api/users")
+async def create_new_user_account(user_in: UserCreate, user: dict = Depends(require_admin)):
+    """Creates a new user account with specified role (Admin only)."""
+    return add_new_user(user_in.username, user_in.password, user_in.role)
+
+@app.put("/api/users/{username}/password")
+async def update_password(username: str, pwd_in: UserPasswordReset, user: dict = Depends(get_current_user)):
+    """Resets password for an account (Admin can reset any user; viewers can reset their own)."""
+    if user["role"] != "admin" and user["username"] != username:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are only permitted to reset your own password"
+        )
+    return reset_user_password(username, pwd_in.password)
+
+@app.put("/api/users/{username}/role")
+async def change_role(username: str, role_in: UserRoleUpdate, user: dict = Depends(require_admin)):
+    """Updates user authorization role (Admin only)."""
+    return update_user_role(username, role_in.role, user["username"])
+
+@app.delete("/api/users/{username}")
+async def remove_user_account(username: str, user: dict = Depends(require_admin)):
+    """Deletes a user account (Admin only, cannot delete self or last admin)."""
+    return delete_user(username, user["username"])
 
 # ----------------- CAMERAS -----------------
 

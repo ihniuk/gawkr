@@ -1,6 +1,7 @@
 import time
 import hashlib
 import hmac
+import re
 import jwt
 from fastapi import HTTPException, Security, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -10,28 +11,15 @@ from app.config import (
     DEFAULT_VIEWER_USER, DEFAULT_VIEWER_PASS
 )
 from app.models import UserRole
+import app.storage as storage
 
 security_scheme = HTTPBearer(auto_error=False)
 
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
-# In-memory users table (backed by persistence in storage.py)
-USERS_DB = {
-    DEFAULT_ADMIN_USER: {
-        "username": DEFAULT_ADMIN_USER,
-        "password_hash": hash_password(DEFAULT_ADMIN_PASS),
-        "role": UserRole.ADMIN
-    },
-    DEFAULT_VIEWER_USER: {
-        "username": DEFAULT_VIEWER_USER,
-        "password_hash": hash_password(DEFAULT_VIEWER_PASS),
-        "role": UserRole.VIEWER
-    }
-}
-
 def authenticate_user(username: str, password: str) -> dict:
-    user = USERS_DB.get(username)
+    user = storage.get_user_by_username(username)
     if not user or user["password_hash"] != hash_password(password):
         return None
     return user
@@ -89,7 +77,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(
             detail="Invalid or expired token"
         )
     username = payload["sub"]
-    user = USERS_DB.get(username)
+    user = storage.get_user_by_username(username)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -104,3 +92,66 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
             detail="Admin privileges required for this operation"
         )
     return user
+
+# User Management Helpers
+def list_users() -> list:
+    return storage.list_all_users()
+
+def add_new_user(username: str, password: str, role: str = UserRole.VIEWER) -> dict:
+    username = username.strip()
+    if len(username) < 2:
+        raise HTTPException(status_code=400, detail="Username must be at least 2 characters long")
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", username):
+        raise HTTPException(status_code=400, detail="Username contains invalid characters (letters, numbers, _, -, . allowed)")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long")
+    if role not in [UserRole.ADMIN, UserRole.VIEWER]:
+        raise HTTPException(status_code=400, detail="Role must be either 'admin' or 'viewer'")
+    
+    existing = storage.get_user_by_username(username)
+    if existing:
+        raise HTTPException(status_code=400, detail=f"User '{username}' already exists")
+    
+    pwd_hash = hash_password(password)
+    return storage.create_user_in_db(username, pwd_hash, role)
+
+def reset_user_password(username: str, new_password: str) -> dict:
+    user = storage.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if len(new_password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long")
+    
+    pwd_hash = hash_password(new_password)
+    storage.update_user_password_in_db(username, pwd_hash)
+    return {"message": f"Password for '{username}' updated successfully"}
+
+def update_user_role(username: str, new_role: str, current_username: str) -> dict:
+    user = storage.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if new_role not in [UserRole.ADMIN, UserRole.VIEWER]:
+        raise HTTPException(status_code=400, detail="Role must be either 'admin' or 'viewer'")
+    
+    if user["role"] == UserRole.ADMIN and new_role == UserRole.VIEWER:
+        if username == current_username:
+            raise HTTPException(status_code=400, detail="You cannot demote your own administrator account")
+        if storage.count_admin_users() <= 1:
+            raise HTTPException(status_code=400, detail="Cannot demote the only remaining administrator")
+
+    storage.update_user_role_in_db(username, new_role)
+    return {"message": f"Role for '{username}' updated to '{new_role}'"}
+
+def delete_user(username: str, current_username: str) -> dict:
+    if username == current_username:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account while logged in")
+    
+    user = storage.get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    if user["role"] == UserRole.ADMIN and storage.count_admin_users() <= 1:
+        raise HTTPException(status_code=400, detail="Cannot delete the only remaining administrator")
+    
+    storage.delete_user_from_db(username)
+    return {"message": f"User '{username}' deleted successfully"}

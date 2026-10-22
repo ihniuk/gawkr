@@ -15,6 +15,27 @@ class UserResponse(BaseModel):
     role: str
     token: str
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "viewer"
+
+class UserPasswordReset(BaseModel):
+    password: str
+
+class UserPasswordChange(BaseModel):
+    username: str
+    current_password: str
+    new_password: str
+
+class UserRoleUpdate(BaseModel):
+    role: str
+
+class UserItem(BaseModel):
+    username: str
+    role: str
+    created_at: float
+
 class DetectionZone(BaseModel):
     id: str
     name: str

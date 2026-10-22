@@ -2,12 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { 
   Sliders, HardDrive, Cpu, Bell, Save, CheckCircle, 
   AlertTriangle, Folder, RefreshCw, Send, Sparkles, 
-  Eye, EyeOff, ShieldAlert, Zap, MessageSquare, Radio, Trash2, Video
+  Eye, EyeOff, ShieldAlert, Zap, MessageSquare, Radio, Trash2, Video,
+  Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X
 } from 'lucide-react';
-import { api } from '../api/client';
+import { api, authStorage } from '../api/client';
 
-export default function ControlPanel({ isAdmin }) {
-  const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'ai_vision', 'notifications'
+export default function ControlPanel({ isAdmin, currentUser }) {
+  const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'notifications', 'users'
   const [settings, setSettings] = useState(null);
   const [diskStats, setDiskStats] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -32,6 +33,21 @@ export default function ControlPanel({ isAdmin }) {
 
   // Hardware Capabilities state
   const [hwCaps, setHwCaps] = useState(null);
+
+  // User Management State
+  const [usersList, setUsersList] = useState([]);
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+  const [userActionError, setUserActionError] = useState('');
+  const [userActionSuccess, setUserActionSuccess] = useState('');
+  const [newUsername, setNewUsername] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [newRole, setNewRole] = useState('viewer');
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [resetModalUser, setResetModalUser] = useState(null);
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [isSubmittingReset, setIsSubmittingReset] = useState(false);
+
+  const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
   const loadSettings = async () => {
     setIsLoading(true);
@@ -62,9 +78,123 @@ export default function ControlPanel({ isAdmin }) {
     }
   };
 
+  const loadUsers = async () => {
+    setIsLoadingUsers(true);
+    setUserActionError('');
+    try {
+      const list = await api.getUsers();
+      setUsersList(list);
+    } catch (err) {
+      setUserActionError(err.message || 'Failed to load user list');
+    } finally {
+      setIsLoadingUsers(false);
+    }
+  };
+
   useEffect(() => {
     loadSettings();
+    loadUsers();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'users') {
+      loadUsers();
+    }
+  }, [activeTab]);
+
+  const handleCreateUser = async (e) => {
+    if (e) e.preventDefault();
+    if (!newUsername || newUsername.trim().length < 2) {
+      setUserActionError('Username must be at least 2 characters long');
+      return;
+    }
+    if (!newPassword || newPassword.length < 4) {
+      setUserActionError('Password must be at least 4 characters long');
+      return;
+    }
+
+    setIsCreatingUser(true);
+    setUserActionError('');
+    setUserActionSuccess('');
+    try {
+      await api.createUser(newUsername.trim(), newPassword, newRole);
+      setUserActionSuccess(`User account '${newUsername.trim()}' created successfully!`);
+      setNewUsername('');
+      setNewPassword('');
+      setNewRole('viewer');
+      await loadUsers();
+      setTimeout(() => setUserActionSuccess(''), 4000);
+    } catch (err) {
+      setUserActionError(err.message || 'Failed to create user');
+    } finally {
+      setIsCreatingUser(false);
+    }
+  };
+
+  const handleOpenResetModal = (targetUser) => {
+    setResetModalUser(targetUser);
+    setResetNewPassword('');
+    setUserActionError('');
+    setUserActionSuccess('');
+  };
+
+  const handleSubmitReset = async (e) => {
+    if (e) e.preventDefault();
+    if (!resetModalUser) return;
+    if (!resetNewPassword || resetNewPassword.length < 4) {
+      setUserActionError('Password must be at least 4 characters long');
+      return;
+    }
+
+    setIsSubmittingReset(true);
+    setUserActionError('');
+    setUserActionSuccess('');
+    try {
+      await api.resetPassword(resetModalUser.username, resetNewPassword);
+      setUserActionSuccess(`Password for '${resetModalUser.username}' updated successfully!`);
+      setResetModalUser(null);
+      setResetNewPassword('');
+      setTimeout(() => setUserActionSuccess(''), 4000);
+    } catch (err) {
+      setUserActionError(err.message || 'Failed to update password');
+    } finally {
+      setIsSubmittingReset(false);
+    }
+  };
+
+  const handleToggleRole = async (targetUser) => {
+    const nextRole = targetUser.role === 'admin' ? 'viewer' : 'admin';
+    const confirmMsg = targetUser.role === 'admin' 
+      ? `Demote '${targetUser.username}' from Administrator to Viewer?` 
+      : `Promote '${targetUser.username}' to Administrator?`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setUserActionError('');
+    setUserActionSuccess('');
+    try {
+      await api.updateUserRole(targetUser.username, nextRole);
+      setUserActionSuccess(`Role for '${targetUser.username}' changed to '${nextRole}'`);
+      await loadUsers();
+      setTimeout(() => setUserActionSuccess(''), 4000);
+    } catch (err) {
+      setUserActionError(err.message || 'Failed to change user role');
+    }
+  };
+
+  const handleDeleteUser = async (targetUser) => {
+    if (!window.confirm(`Are you sure you want to delete user account '${targetUser.username}'? This cannot be undone.`)) return;
+
+    setUserActionError('');
+    setUserActionSuccess('');
+    try {
+      await api.deleteUser(targetUser.username);
+      setUserActionSuccess(`User account '${targetUser.username}' deleted.`);
+      await loadUsers();
+      setTimeout(() => setUserActionSuccess(''), 4000);
+    } catch (err) {
+      setUserActionError(err.message || 'Failed to delete user');
+    }
+  };
 
   const handleSave = async () => {
     if (!settings) return;
@@ -288,6 +418,24 @@ export default function ControlPanel({ isAdmin }) {
           onClick={() => setActiveTab('notifications')}
         >
           <Bell size={14} /> Notifications
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 140px',
+            border: 'none',
+            borderRadius: '8px',
+            background: activeTab === 'users' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'users' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => setActiveTab('users')}
+        >
+          <Users size={14} /> Users & Access
         </button>
       </div>
 
@@ -1336,6 +1484,374 @@ export default function ControlPanel({ isAdmin }) {
                 color: testNotificationFeedback.mqtt.success ? '#34d399' : '#fb7185'
               }}>
                 {testNotificationFeedback.mqtt.message}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {/* ----------------- TAB 5: USERS & ACCESS MANAGEMENT ----------------- */}
+      {activeTab === 'users' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Action Alerts */}
+          {userActionSuccess && (
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.12)',
+              border: '1px solid rgba(16, 185, 129, 0.3)',
+              color: 'var(--accent-emerald)',
+              padding: '12px 16px',
+              borderRadius: '10px',
+              fontSize: '0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <CheckCircle size={16} /> {userActionSuccess}
+            </div>
+          )}
+
+          {userActionError && (
+            <div style={{
+              background: 'rgba(244, 63, 94, 0.12)',
+              border: '1px solid rgba(244, 63, 94, 0.3)',
+              color: '#fb7185',
+              padding: '12px 16px',
+              borderRadius: '10px',
+              fontSize: '0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}>
+              <AlertTriangle size={16} /> {userActionError}
+            </div>
+          )}
+
+          {/* Reset Password Dialog Modal */}
+          {resetModalUser && (
+            <div className="modal-overlay" onClick={() => setResetModalUser(null)} style={{ zIndex: 1100 }}>
+              <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      background: 'rgba(6, 182, 212, 0.15)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <Key size={16} color="var(--accent-cyan)" />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Reset Password</h3>
+                      <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Target: @{resetModalUser.username}</p>
+                    </div>
+                  </div>
+                  <button className="btn-glass" onClick={() => setResetModalUser(null)} style={{ padding: '6px' }}><X size={15} /></button>
+                </div>
+
+                <form onSubmit={handleSubmitReset}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                      New Password (minimum 4 characters)
+                    </label>
+                    <input
+                      type="password"
+                      className="glass-input"
+                      placeholder="Enter new strong password"
+                      value={resetNewPassword}
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      autoFocus
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn-glass"
+                      onClick={() => setResetModalUser(null)}
+                      disabled={isSubmittingReset}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      disabled={isSubmittingReset}
+                    >
+                      <Key size={14} /> {isSubmittingReset ? 'Saving...' : 'Set New Password'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: isAdmin ? 'minmax(0, 1.8fr) minmax(0, 1.2fr)' : '1fr', gap: '20px' }}>
+            {/* Users Table Card */}
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Users size={18} color="var(--accent-cyan)" />
+                  <h3 style={{ fontSize: '0.96rem', fontWeight: 700 }}>System User Accounts</h3>
+                  <span style={{
+                    fontSize: '0.7rem',
+                    background: 'rgba(255, 255, 255, 0.08)',
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    color: 'var(--text-muted)',
+                    fontFamily: 'var(--font-mono)'
+                  }}>
+                    {usersList.length} users
+                  </span>
+                </div>
+                <button
+                  className="btn-glass"
+                  onClick={loadUsers}
+                  disabled={isLoadingUsers}
+                  style={{ fontSize: '0.74rem', padding: '6px 10px' }}
+                >
+                  <RefreshCw size={12} className={isLoadingUsers ? 'spin' : ''} /> Refresh
+                </button>
+              </div>
+
+              {isLoadingUsers && usersList.length === 0 ? (
+                <div style={{ padding: '30px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  Loading registered user accounts...
+                </div>
+              ) : (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.8rem' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: 'var(--text-muted)' }}>
+                        <th style={{ padding: '10px 8px', fontWeight: 600 }}>User</th>
+                        <th style={{ padding: '10px 8px', fontWeight: 600 }}>Role</th>
+                        <th style={{ padding: '10px 8px', fontWeight: 600 }}>Registered</th>
+                        <th style={{ padding: '10px 8px', fontWeight: 600, textAlign: 'right' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {usersList.map((u) => {
+                        const isSelf = activeUser.username === u.username;
+                        const isOnlyAdmin = u.role === 'admin' && usersList.filter(x => x.role === 'admin').length <= 1;
+
+                        return (
+                          <tr key={u.username} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                            <td style={{ padding: '12px 8px', fontWeight: 600 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{
+                                  width: '28px',
+                                  height: '28px',
+                                  borderRadius: '50%',
+                                  background: u.role === 'admin' ? 'rgba(6, 182, 212, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                                  color: u.role === 'admin' ? 'var(--accent-cyan)' : 'var(--accent-emerald)',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  fontSize: '0.74rem',
+                                  fontWeight: 800,
+                                  textTransform: 'uppercase'
+                                }}>
+                                  {u.username.slice(0, 2)}
+                                </div>
+                                <div>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                    <span>{u.username}</span>
+                                    {isSelf && (
+                                      <span style={{
+                                        fontSize: '0.62rem',
+                                        background: 'rgba(6, 182, 212, 0.15)',
+                                        color: 'var(--accent-cyan)',
+                                        padding: '1px 5px',
+                                        borderRadius: '4px',
+                                        fontWeight: 700
+                                      }}>
+                                        YOU
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+
+                            <td style={{ padding: '12px 8px' }}>
+                              {u.role === 'admin' ? (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  background: 'rgba(6, 182, 212, 0.12)',
+                                  border: '1px solid rgba(6, 182, 212, 0.25)',
+                                  color: 'var(--accent-cyan)',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700
+                                }}>
+                                  <Shield size={11} /> Admin
+                                </span>
+                              ) : (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  background: 'rgba(16, 185, 129, 0.12)',
+                                  border: '1px solid rgba(16, 185, 129, 0.25)',
+                                  color: 'var(--accent-emerald)',
+                                  padding: '3px 8px',
+                                  borderRadius: '6px',
+                                  fontSize: '0.72rem',
+                                  fontWeight: 600
+                                }}>
+                                  <UserCheck size={11} /> Viewer
+                                </span>
+                              )}
+                            </td>
+
+                            <td style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: '0.74rem' }}>
+                              {u.created_at ? new Date(u.created_at * 1000).toLocaleDateString() : 'System Default'}
+                            </td>
+
+                            <td style={{ padding: '12px 8px', textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                                {/* Reset Password (Admins can reset any user; viewers can reset their own) */}
+                                {(isAdmin || isSelf) && (
+                                  <button
+                                    className="btn-glass"
+                                    onClick={() => handleOpenResetModal(u)}
+                                    title={`Reset password for ${u.username}`}
+                                    style={{ padding: '4px 8px', fontSize: '0.72rem', gap: '4px' }}
+                                  >
+                                    <Key size={12} color="var(--accent-cyan)" /> Reset Pass
+                                  </button>
+                                )}
+
+                                {/* Role Switch (Admin only, not self, not only admin) */}
+                                {isAdmin && (
+                                  <button
+                                    className="btn-glass"
+                                    onClick={() => handleToggleRole(u)}
+                                    disabled={isSelf || isOnlyAdmin}
+                                    title={isSelf ? "Cannot change your own role" : (isOnlyAdmin ? "Cannot demote last admin" : `Switch role to ${u.role === 'admin' ? 'viewer' : 'admin'}`)}
+                                    style={{
+                                      padding: '4px 8px',
+                                      fontSize: '0.72rem',
+                                      gap: '4px',
+                                      opacity: (isSelf || isOnlyAdmin) ? 0.4 : 1
+                                    }}
+                                  >
+                                    <ShieldCheck size={12} /> {u.role === 'admin' ? 'Demote' : 'Promote'}
+                                  </button>
+                                )}
+
+                                {/* Delete User (Admin only, not self, not only admin) */}
+                                {isAdmin && (
+                                  <button
+                                    className="btn-glass"
+                                    onClick={() => handleDeleteUser(u)}
+                                    disabled={isSelf || isOnlyAdmin}
+                                    title={isSelf ? "Cannot delete your own account" : (isOnlyAdmin ? "Cannot delete sole admin" : `Delete user ${u.username}`)}
+                                    style={{
+                                      padding: '4px 6px',
+                                      color: '#fb7185',
+                                      opacity: (isSelf || isOnlyAdmin) ? 0.35 : 1
+                                    }}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Add New User Card (Admin Only) */}
+            {isAdmin && (
+              <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                  <UserPlus size={18} color="var(--accent-cyan)" />
+                  <h3 style={{ fontSize: '0.96rem', fontWeight: 700 }}>Add New User Account</h3>
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '16px' }}>
+                  Grant family members, security personnel, or monitoring clients access to Gawkr NVR with dedicated credentials.
+                </p>
+
+                <form onSubmit={handleCreateUser}>
+                  <div style={{ marginBottom: '12px' }}>
+                    <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                      Username
+                    </label>
+                    <input
+                      type="text"
+                      className="glass-input"
+                      placeholder="e.g. guard1, patrick, guest"
+                      value={newUsername}
+                      onChange={(e) => setNewUsername(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: '12px' }}>
+                    <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                      Initial Password (min 4 characters)
+                    </label>
+                    <input
+                      type="password"
+                      className="glass-input"
+                      placeholder="Enter temporary or permanent password"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                      Authorization Role
+                    </label>
+                    <select
+                      className="glass-input"
+                      value={newRole}
+                      onChange={(e) => setNewRole(e.target.value)}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <option value="viewer" style={{ background: '#0e1626' }}>Viewer (Live Stream & Clip Review Only)</option>
+                      <option value="admin" style={{ background: '#0e1626' }}>Administrator (Full System & User Control)</option>
+                    </select>
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="btn-primary"
+                    style={{ width: '100%', justifyContent: 'center' }}
+                    disabled={isCreatingUser}
+                  >
+                    <UserPlus size={14} /> {isCreatingUser ? 'Creating Account...' : 'Create User Account'}
+                  </button>
+                </form>
+
+                {/* Role Reference Card */}
+                <div style={{
+                  marginTop: '18px',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  borderRadius: '8px',
+                  padding: '12px',
+                  fontSize: '0.72rem',
+                  color: 'var(--text-muted)',
+                  lineHeight: '1.45'
+                }}>
+                  <div style={{ fontWeight: 700, color: '#f1f5f9', marginBottom: '4px' }}>Role Permissions Guide:</div>
+                  <div>• <b style={{ color: 'var(--accent-cyan)' }}>Admin:</b> Add/remove cameras, tripwire zones, storage purge, AI settings, Telegram alerts, and user accounts.</div>
+                  <div style={{ marginTop: '3px' }}>• <b style={{ color: 'var(--accent-emerald)' }}>Viewer:</b> Monitor real-time matrix streams, search past AI clips, and reset personal password.</div>
+                </div>
               </div>
             )}
           </div>
