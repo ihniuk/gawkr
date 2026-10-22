@@ -59,23 +59,56 @@ def evaluate_detection_zones(center_x: float, bottom_y: float, zones: List[Detec
 
     return False, None
 
+# COCO class index to label mappings
+COCO_CLASS_MAP = {
+    0: "person",
+    1: "bicycle",
+    2: "car",
+    3: "motorcycle",
+    5: "bus",
+    7: "truck",
+    15: "cat",
+    16: "dog"
+}
+
+LABEL_TO_COCO_ID = {
+    "person": [0],
+    "bicycle": [1],
+    "car": [2, 5, 7], # car, bus, truck grouped into car
+    "motorcycle": [3],
+    "bus": [5],
+    "truck": [7],
+    "cat": [15],
+    "dog": [16]
+}
+
 class AIInferenceEngine:
     def __init__(self):
-        # MOG2 background subtractor with shadow suppression
-        self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=32, detectShadows=True)
+        self.model = None
+        self._init_model()
+
+    def _init_model(self):
+        try:
+            from ultralytics import YOLO
+            import torch
+            # Initialize real YOLOv8n deep neural network
+            self.model = YOLO("yolov8n.pt")
+            print("AI Inference Engine: YOLOv8n Neural Network loaded successfully.")
+        except Exception as e:
+            print(f"AI Inference Engine: YOLO initialization notice: {e}")
+            self.model = None
 
     def detect(self, frame: np.ndarray, settings: CameraSettings, is_simulation: bool = False) -> Tuple[List[DetectionObject], float]:
         """
-        Runs object detection on the given sub-stream frame with strict false-alert rejection.
+        Runs neural network object detection on the frame with true spatial perception and zone filtering.
         Returns: (List[DetectionObject], inference_latency_ms)
         """
         t0 = time.time()
         detected_objects: List[DetectionObject] = []
-        h, w = frame.shape[:2]
         
         if is_simulation:
             now = time.time()
-            # Simulated person movement (e.g. walks across the frame on a 30-second cycle)
+            # Simulated person movement (walks across the frame on a 30-second cycle)
             cycle = (now * 0.15) % 30.0
             # Visible only during seconds 4 to 16
             if 4.0 <= cycle <= 16.0:
@@ -89,7 +122,8 @@ class AIInferenceEngine:
                 conf = 0.94
                 label = "person"
                 
-                if label in settings.enabled_classes and conf >= settings.confidence_threshold:
+                req_conf = getattr(settings, 'confidence_threshold', 0.45)
+                if label in settings.enabled_classes and conf >= req_conf:
                     center_x = (box[1] + box[3]) / 2.0
                     bottom_y = box[2]
                     
@@ -105,75 +139,78 @@ class AIInferenceEngine:
             latency_ms = (time.time() - t0) * 1000.0 + 4.5
             return detected_objects, round(latency_ms, 2)
 
-        # Real Camera Feed Analysis:
-        proc_w, proc_h = 640, 360
-        resized = cv2.resize(frame, (proc_w, proc_h))
-        
-        # 1. Background subtraction with shadow removal
-        fg_mask = self.bg_subtractor.apply(resized)
-        # Suppress shadows (value 127 in MOG2)
-        _, thresh = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
-        
-        # Morphological noise opening (removes leaves, bugs, sensor noise)
-        kernel_open = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_open)
-        
-        # Morphological closing (joins body parts together)
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
-        dilated = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
-        
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = getattr(settings, 'min_area_pixels', 1000)
-        
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < min_area:
-                continue # Reject small noise, wind, leaves
-                
-            x, y, bw, bh = cv2.boundingRect(c)
-            aspect_ratio = bw / float(bh)
-            
-            label = None
-            conf = 0.50
-            
-            # Person detection:
-            # Standard upright person silhouette (height >= 7% of frame, aspect ratio 0.18 to 0.90)
-            if 0.18 <= aspect_ratio <= 0.90 and bh >= (proc_h * 0.07):
-                label = "person"
-                conf = min(0.96, 0.78 + (bh / float(proc_h)) * 0.22)
-            # Person walking diagonally, carrying bags/jacket, or bending (aspect ratio 0.90 to 1.30)
-            elif 0.90 < aspect_ratio <= 1.30 and bh >= (proc_h * 0.12) and area >= min_area:
-                label = "person"
-                conf = 0.82
-            # Vehicle: distinctly horizontal shape
-            elif 1.25 <= aspect_ratio <= 3.4 and area > (min_area * 1.8):
-                label = "car"
-                conf = 0.88
-            # Smaller horizontal/square animal shape
-            elif 0.70 <= aspect_ratio <= 1.30 and bh < (proc_h * 0.18):
-                if "dog" in settings.enabled_classes or "cat" in settings.enabled_classes:
-                    label = "dog" if "dog" in settings.enabled_classes else "cat"
-                    conf = 0.76
+        if self.model is None:
+            self._init_model()
 
-            confidence_req = max(0.75, getattr(settings, 'confidence_threshold', 0.75))
-            if label and label in settings.enabled_classes and conf >= confidence_req:
-                ymin = y / proc_h
-                xmin = x / proc_w
-                ymax = (y + bh) / proc_h
-                xmax = (x + bw) / proc_w
+        if self.model is not None:
+            # Build target COCO class IDs based on camera enabled classes
+            target_ids = []
+            for c in settings.enabled_classes:
+                if c in LABEL_TO_COCO_ID:
+                    target_ids.extend(LABEL_TO_COCO_ID[c])
+            target_ids = list(set(target_ids)) if target_ids else [0, 1, 2, 3, 5, 7, 15, 16]
+
+            user_conf = getattr(settings, 'confidence_threshold', 0.45)
+            # Query YOLO with sensitivity down to 0.38 so night persons are not missed
+            yolo_query_conf = min(0.38, user_conf)
+
+            try:
+                # Run YOLO inference
+                results = self.model(
+                    frame,
+                    verbose=False,
+                    conf=yolo_query_conf,
+                    classes=target_ids
+                )
                 
-                center_x = (xmin + xmax) / 2.0
-                center_y = (ymin + ymax) / 2.0
-                bottom_y = ymax
-                
-                is_valid, matched_zone = evaluate_detection_zones(center_x, bottom_y, settings.zones, center_y=center_y)
-                if is_valid:
-                    detected_objects.append(DetectionObject(
-                        label=label,
-                        confidence=round(conf, 2),
-                        box=[ymin, xmin, ymax, xmax],
-                        zone_id=matched_zone
-                    ))
+                if results and len(results) > 0:
+                    boxes = results[0].boxes
+                    for b in boxes:
+                        cls_id = int(b.cls[0])
+                        conf = float(b.conf[0])
+                        
+                        raw_label = COCO_CLASS_MAP.get(cls_id, self.model.names.get(cls_id, "unknown"))
+                        # Normalize vehicle types
+                        if raw_label in ["bus", "truck"] and "car" in settings.enabled_classes and raw_label not in settings.enabled_classes:
+                            label = "car"
+                        else:
+                            label = raw_label
+
+                        # Check if label is enabled
+                        if label not in settings.enabled_classes:
+                            continue
+
+                        # Confidence filter:
+                        # For person: allow 0.40+ (robust against night IR low-contrast)
+                        # For vehicles/animals: enforce user_conf
+                        min_req = min(0.40, user_conf) if label == "person" else user_conf
+                        if conf < min_req:
+                            continue
+
+                        # Extract normalized bounding box [ymin, xmin, ymax, xmax]
+                        xmin, ymin, xmax, ymax = b.xyxyn[0].tolist()
+                        ymin = max(0.0, min(1.0, float(ymin)))
+                        xmin = max(0.0, min(1.0, float(xmin)))
+                        ymax = max(0.0, min(1.0, float(ymax)))
+                        xmax = max(0.0, min(1.0, float(xmax)))
+
+                        center_x = (xmin + xmax) / 2.0
+                        center_y = (ymin + ymax) / 2.0
+                        bottom_y = ymax
+
+                        is_valid, matched_zone = evaluate_detection_zones(
+                            center_x, bottom_y, settings.zones, center_y=center_y
+                        )
+
+                        if is_valid:
+                            detected_objects.append(DetectionObject(
+                                label=label,
+                                confidence=round(conf, 2),
+                                box=[ymin, xmin, ymax, xmax],
+                                zone_id=matched_zone
+                            ))
+            except Exception as e:
+                print(f"YOLO inference error: {e}")
 
         latency_ms = (time.time() - t0) * 1000.0
         return detected_objects, round(latency_ms, 2)

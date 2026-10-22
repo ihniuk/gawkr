@@ -71,11 +71,11 @@ def send_telegram_alert(bot_token: str, chat_id: str, event: Any, snapshot_path:
         f"🕒 <b>Time:</b> {time_str}\n"
         f"🛡️ <b>Threat Level:</b> {threat_icon} {html.escape(str(threat))}\n"
     )
-    if hasattr(event, 'ai_description') and event.ai_description:
-        caption_html += f"🧠 <b>AI Vision:</b> <i>{html.escape(str(event.ai_description))}</i>\n"
-    elif hasattr(event, 'objects') and event.objects:
+    if hasattr(event, 'objects') and event.objects:
         labels_str = _format_detected_labels(event.objects)
         caption_html += f"🎯 <b>Detected:</b> {html.escape(labels_str)}\n"
+    if hasattr(event, 'ai_description') and event.ai_description:
+        caption_html += f"🧠 <b>AI Vision:</b> <i>{html.escape(str(event.ai_description))}</i>\n"
 
     # Plain text fallback if HTML parser encounters any issue
     caption_plain = (
@@ -84,11 +84,11 @@ def send_telegram_alert(bot_token: str, chat_id: str, event: Any, snapshot_path:
         f"🕒 Time: {time_str}\n"
         f"🛡️ Threat Level: {threat}\n"
     )
-    if hasattr(event, 'ai_description') and event.ai_description:
-        caption_plain += f"🧠 AI Vision: {event.ai_description}\n"
-    elif hasattr(event, 'objects') and event.objects:
+    if hasattr(event, 'objects') and event.objects:
         labels_str = _format_detected_labels(event.objects)
         caption_plain += f"🎯 Detected: {labels_str}\n"
+    if hasattr(event, 'ai_description') and event.ai_description:
+        caption_plain += f"🧠 AI Vision: {event.ai_description}\n"
 
     # Dispatch: Try HTML first, automatically fallback to plain text if Telegram rejects markup
     resp = None

@@ -34,6 +34,8 @@ backend/data/recordings/*
 *.mp4
 *.avi
 *.mkv
+*.pt
+*.onnx
 
 # Temporary debug & scratch scripts
 backend/monitor_walk.py

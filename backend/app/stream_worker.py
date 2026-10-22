@@ -215,8 +215,22 @@ class CameraStreamWorker:
             if sys_settings.ai_vision.enabled:
                 vision_thread = threading.Thread(target=_run_ai_vision, daemon=True)
                 vision_thread.start()
-                # Wait up to 2.5 seconds for quick LLM description so Telegram includes it
-                vision_thread.join(timeout=2.5)
+                # Wait up to 4.5 seconds for quick LLM description so Telegram includes it
+                vision_thread.join(timeout=4.5)
+
+            # False Alarm Suppression:
+            # If AI Vision analyzed the snapshot and explicitly confirmed that no people or dynamic activity are present
+            # and threat level is Safe, suppress sending a false positive alert to Telegram/Discord.
+            desc_lower = (evt.ai_description or "").lower()
+            false_alarm_keywords = [
+                "no people are visible", "no people or dynamic activity",
+                "remains empty with no people", "garden is empty",
+                "empty with no people", "no dynamic activity", "no activity present"
+            ]
+            is_confirmed_false_alarm = (evt.threat_level == "Safe") and any(k in desc_lower for k in false_alarm_keywords)
+            if is_confirmed_false_alarm:
+                print(f"False alert suppressed for {evt.camera_name}: AI Vision confirmed no dynamic activity or persons.")
+                return
 
             # Outbound notifications (Telegram, Discord, Slack, Pushover)
             dispatch_event_notifications(evt, sys_settings.notifications, snapshot_path=str(snap_path))
@@ -449,9 +463,12 @@ class CameraStreamWorker:
                 )
                 self.ai_latency_ms = lat_ms
                 
-                # Strict threshold: Only trigger alerts when AI certainty is 75% or greater
-                certainty_threshold = max(0.75, getattr(self.camera.settings, 'confidence_threshold', 0.75))
-                alert_detections = [d for d in detections if d.confidence >= certainty_threshold]
+                # Adaptive threshold for YOLOv8 neural detections
+                user_conf = getattr(self.camera.settings, 'confidence_threshold', 0.45)
+                alert_detections = [
+                    d for d in detections
+                    if (d.confidence >= min(0.40, user_conf) if d.label == "person" else d.confidence >= user_conf)
+                ]
 
                 # Evaluate vehicle stationary vs motion state
                 evaluated_detections = self._evaluate_vehicle_motion(alert_detections, loop_start)

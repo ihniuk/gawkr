@@ -46,7 +46,7 @@ class DetectionZone(BaseModel):
     zone_type: str = "include" # "include" (only trigger inside), "exclude" (ignore inside), "privacy_mask" (blackout)
 
 class CameraSettings(BaseModel):
-    confidence_threshold: float = 0.75
+    confidence_threshold: float = 0.45
     enabled_classes: List[str] = ["person", "car", "motorcycle", "dog", "cat"]
     zones: List[DetectionZone] = []
     recording_mode: str = "ai_event" # "continuous", "ai_event", "disabled"
@@ -58,7 +58,7 @@ class CameraSettings(BaseModel):
     encoding_preset: str = "ultrafast" # "ultrafast", "veryfast", "fast", "medium"
     encoding_crf: int = 26
     alert_cooldown_seconds: int = 45   # Cooldown between alert triggers to prevent constant spam
-    min_confirmation_frames: int = 4   # Require N consecutive frames to confirm real object vs glitch
+    min_confirmation_frames: int = 2   # Require N consecutive frames to confirm real object vs glitch
     min_area_pixels: int = 2500        # Reject small pixel changes, leaves, wind
     pre_roll_seconds: int = 4          # Pre-roll recording seconds before detection
     post_roll_seconds: int = 6         # Post-roll recording seconds after detection
