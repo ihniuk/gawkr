@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Lock, User, Key, X, ShieldCheck, UserCheck, CheckCircle } from 'lucide-react';
 import { api } from '../api/client';
+import { evaluatePasswordStrength } from '../utils/security';
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
   const [activeTab, setActiveTab] = useState('login'); // 'login' | 'reset'
@@ -52,8 +53,9 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
 
   const handleChangePassword = async (e) => {
     if (e) e.preventDefault();
-    if (!newPassword || newPassword.length < 4) {
-      setErrorMsg('New password must be at least 4 characters');
+    const strength = evaluatePasswordStrength(newPassword);
+    if (!strength.valid) {
+      setErrorMsg(strength.message || 'Password does not meet minimum strength requirements');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -267,15 +269,42 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
             </div>
 
             <div style={{ marginBottom: '10px' }}>
-              <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>New Password (min 4 chars)</label>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>New Password (min 8 chars)</label>
+                {newPassword && (
+                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: evaluatePasswordStrength(newPassword).color }}>
+                    {evaluatePasswordStrength(newPassword).label}
+                  </span>
+                )}
+              </div>
               <input
                 type="password"
                 className="glass-input"
-                placeholder="Enter new password"
+                placeholder="At least 8 chars, 1 letter, 1 number"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 required
               />
+              {newPassword && (
+                <div style={{ display: 'flex', gap: '3px', marginTop: '6px' }}>
+                  {[1, 2, 3, 4].map((step) => {
+                    const st = evaluatePasswordStrength(newPassword);
+                    const filled = st.score >= step;
+                    return (
+                      <div
+                        key={step}
+                        style={{
+                          flex: 1,
+                          height: '3px',
+                          borderRadius: '2px',
+                          background: filled ? st.color : 'rgba(255, 255, 255, 0.1)',
+                          transition: 'background 0.2s ease'
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div style={{ marginBottom: '16px' }}>

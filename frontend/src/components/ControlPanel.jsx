@@ -6,6 +6,7 @@ import {
   Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
+import { evaluatePasswordStrength } from '../utils/security';
 
 export default function ControlPanel({ isAdmin, currentUser }) {
   const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'notifications', 'users'
@@ -108,8 +109,9 @@ export default function ControlPanel({ isAdmin, currentUser }) {
       setUserActionError('Username must be at least 2 characters long');
       return;
     }
-    if (!newPassword || newPassword.length < 4) {
-      setUserActionError('Password must be at least 4 characters long');
+    const st = evaluatePasswordStrength(newPassword);
+    if (!st.valid) {
+      setUserActionError(st.message || 'Password must be at least 8 characters long with letters and numbers');
       return;
     }
 
@@ -141,8 +143,9 @@ export default function ControlPanel({ isAdmin, currentUser }) {
   const handleSubmitReset = async (e) => {
     if (e) e.preventDefault();
     if (!resetModalUser) return;
-    if (!resetNewPassword || resetNewPassword.length < 4) {
-      setUserActionError('Password must be at least 4 characters long');
+    const st = evaluatePasswordStrength(resetNewPassword);
+    if (!st.valid) {
+      setUserActionError(st.message || 'Password must be at least 8 characters long with letters and numbers');
       return;
     }
 
@@ -1552,18 +1555,45 @@ export default function ControlPanel({ isAdmin, currentUser }) {
 
                 <form onSubmit={handleSubmitReset}>
                   <div style={{ marginBottom: '16px' }}>
-                    <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
-                      New Password (minimum 4 characters)
-                    </label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                      <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                        New Password (min 8 chars)
+                      </label>
+                      {resetNewPassword && (
+                        <span style={{ fontSize: '0.7rem', fontWeight: 700, color: evaluatePasswordStrength(resetNewPassword).color }}>
+                          {evaluatePasswordStrength(resetNewPassword).label}
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="password"
                       className="glass-input"
-                      placeholder="Enter new strong password"
+                      placeholder="At least 8 chars, 1 letter, 1 number"
                       value={resetNewPassword}
                       onChange={(e) => setResetNewPassword(e.target.value)}
                       autoFocus
                       required
                     />
+                    {resetNewPassword && (
+                      <div style={{ display: 'flex', gap: '3px', marginTop: '6px' }}>
+                        {[1, 2, 3, 4].map((step) => {
+                          const st = evaluatePasswordStrength(resetNewPassword);
+                          const filled = st.score >= step;
+                          return (
+                            <div
+                              key={step}
+                              style={{
+                                flex: 1,
+                                height: '3px',
+                                borderRadius: '2px',
+                                background: filled ? st.color : 'rgba(255, 255, 255, 0.1)',
+                                transition: 'background 0.2s ease'
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
@@ -1799,17 +1829,44 @@ export default function ControlPanel({ isAdmin, currentUser }) {
                   </div>
 
                   <div style={{ marginBottom: '12px' }}>
-                    <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
-                      Initial Password (min 4 characters)
-                    </label>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                        Initial Password (min 8 chars)
+                      </label>
+                      {newPassword && (
+                        <span style={{ fontSize: '0.7rem', fontWeight: 700, color: evaluatePasswordStrength(newPassword).color }}>
+                          {evaluatePasswordStrength(newPassword).label}
+                        </span>
+                      )}
+                    </div>
                     <input
                       type="password"
                       className="glass-input"
-                      placeholder="Enter temporary or permanent password"
+                      placeholder="At least 8 chars, 1 letter, 1 number"
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       required
                     />
+                    {newPassword && (
+                      <div style={{ display: 'flex', gap: '3px', marginTop: '6px' }}>
+                        {[1, 2, 3, 4].map((step) => {
+                          const st = evaluatePasswordStrength(newPassword);
+                          const filled = st.score >= step;
+                          return (
+                            <div
+                              key={step}
+                              style={{
+                                flex: 1,
+                                height: '3px',
+                                borderRadius: '2px',
+                                background: filled ? st.color : 'rgba(255, 255, 255, 0.1)',
+                                transition: 'background 0.2s ease'
+                              }}
+                            />
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ marginBottom: '16px' }}>

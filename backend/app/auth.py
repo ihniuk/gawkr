@@ -93,6 +93,24 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
         )
     return user
 
+def validate_password_strength(password: str) -> None:
+    """Enforces minimum 8 characters, with letters and numbers."""
+    if len(password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters long"
+        )
+    if not any(c.isalpha() for c in password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one letter"
+        )
+    if not any(c.isdigit() for c in password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one number"
+        )
+
 # User Management Helpers
 def list_users() -> list:
     return storage.list_all_users()
@@ -103,8 +121,7 @@ def add_new_user(username: str, password: str, role: str = UserRole.VIEWER) -> d
         raise HTTPException(status_code=400, detail="Username must be at least 2 characters long")
     if not re.match(r"^[a-zA-Z0-9_\-\.]+$", username):
         raise HTTPException(status_code=400, detail="Username contains invalid characters (letters, numbers, _, -, . allowed)")
-    if len(password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long")
+    validate_password_strength(password)
     if role not in [UserRole.ADMIN, UserRole.VIEWER]:
         raise HTTPException(status_code=400, detail="Role must be either 'admin' or 'viewer'")
     
@@ -119,8 +136,7 @@ def reset_user_password(username: str, new_password: str) -> dict:
     user = storage.get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if len(new_password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long")
+    validate_password_strength(new_password)
     
     pwd_hash = hash_password(new_password)
     storage.update_user_password_in_db(username, pwd_hash)
