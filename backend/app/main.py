@@ -464,9 +464,15 @@ async def websocket_events_endpoint(websocket: WebSocket):
         notification_manager.disconnect(websocket)
 
 # ----------------- FRONTEND STATIC SERVING (IF BUILT) -----------------
-dist_path = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
-if dist_path.exists():
-    app.mount("/", StaticFiles(directory=str(dist_path), html=True), name="static")
+for candidate in [
+    Path(__file__).resolve().parent.parent.parent / "frontend" / "dist",
+    Path(__file__).resolve().parent.parent / "frontend" / "dist",
+    Path("/app/frontend/dist"),
+]:
+    if candidate.exists() and (candidate / "index.html").exists():
+        app.mount("/", StaticFiles(directory=str(candidate), html=True), name="static")
+        print(f"Mounted frontend static files from: {candidate}")
+        break
 
 if __name__ == "__main__":
     import uvicorn
