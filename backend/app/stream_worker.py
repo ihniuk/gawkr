@@ -456,18 +456,30 @@ class CameraStreamWorker:
             # Run AI Inference if enabled and interval has elapsed
             if self.camera.settings.ai_enabled and (loop_start - last_infer_time >= infer_interval):
                 last_infer_time = loop_start
+
+                # Determine effective threshold: Global system setting vs individual camera override
+                effective_threshold = getattr(self.camera.settings, 'confidence_threshold', 0.50)
+                if getattr(self.camera.settings, 'use_global_threshold', True):
+                    try:
+                        from app.storage import get_system_settings
+                        sys_settings = get_system_settings()
+                        if hasattr(sys_settings, 'detection') and hasattr(sys_settings.detection, 'global_confidence_threshold'):
+                            effective_threshold = sys_settings.detection.global_confidence_threshold
+                    except Exception:
+                        pass
+
                 detections, lat_ms = inference_engine.detect(
                     frame,
                     self.camera.settings,
-                    is_simulation=self.camera.is_simulation
+                    is_simulation=self.camera.is_simulation,
+                    effective_threshold=effective_threshold
                 )
                 self.ai_latency_ms = lat_ms
                 
                 # Adaptive threshold for YOLOv8 neural detections
-                user_conf = getattr(self.camera.settings, 'confidence_threshold', 0.45)
                 alert_detections = [
                     d for d in detections
-                    if (d.confidence >= min(0.40, user_conf) if d.label == "person" else d.confidence >= user_conf)
+                    if (d.confidence >= min(0.40, effective_threshold) if d.label == "person" else d.confidence >= effective_threshold)
                 ]
 
                 # Evaluate vehicle stationary vs motion state

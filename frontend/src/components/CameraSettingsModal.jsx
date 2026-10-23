@@ -30,7 +30,9 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
   const [streamTestFeedback, setStreamTestFeedback] = useState({});
 
   // AI Settings
-  const [confidence, setConfidence] = useState(camera.settings?.confidence_threshold || 0.75);
+  const [useGlobal, setUseGlobal] = useState(camera.settings?.use_global_threshold ?? true);
+  const [confidence, setConfidence] = useState(camera.settings?.confidence_threshold || 0.50);
+  const [globalThreshold, setGlobalThreshold] = useState(0.50);
   const [cooldown, setCooldown] = useState(camera.settings?.alert_cooldown_seconds || 45);
   const [minFrames, setMinFrames] = useState(camera.settings?.min_confirmation_frames || 4);
   const [aiEnabled, setAiEnabled] = useState(camera.settings?.ai_enabled ?? true);
@@ -49,6 +51,13 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
     api.getHardwareCapabilities()
       .then(data => setHwCaps(data))
       .catch(err => console.warn('Could not fetch hardware capabilities:', err));
+
+    api.getSettings()
+      .then(res => {
+        const g = res.settings?.detection?.global_confidence_threshold;
+        if (g !== undefined) setGlobalThreshold(g);
+      })
+      .catch(() => {});
   }, []);
 
   // Zones & Privacy Masks
@@ -126,6 +135,7 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
         settings: {
           ...camera.settings,
           confidence_threshold: Number(confidence),
+          use_global_threshold: useGlobal,
           alert_cooldown_seconds: Number(cooldown),
           min_confirmation_frames: Number(minFrames),
           ai_enabled: aiEnabled,
@@ -703,20 +713,84 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
               </label>
             </div>
 
-            <div style={{ marginBottom: '14px', background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', marginBottom: '4px' }}>
-                <span style={{ color: 'var(--text-muted)' }}>Confidence Sensitivity Threshold</span>
-                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)' }}>{Math.round(confidence * 100)}%</span>
+            {/* AI Alert Threshold Strategy: Global vs Custom */}
+            <div style={{ marginBottom: '14px', background: 'rgba(255, 255, 255, 0.02)', padding: '14px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+                <div>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Sliders size={13} color="var(--accent-cyan)" />
+                    <span>AI Detection Threshold Policy</span>
+                  </div>
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                    Choose whether this camera follows system global sensitivity or a custom threshold.
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    type="button"
+                    className="btn-glass"
+                    style={{
+                      fontSize: '0.72rem',
+                      padding: '4px 10px',
+                      background: useGlobal ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+                      color: useGlobal ? 'var(--accent-cyan)' : 'var(--text-muted)',
+                      borderColor: useGlobal ? 'var(--accent-cyan)' : 'rgba(255,255,255,0.08)',
+                      fontWeight: useGlobal ? 700 : 500
+                    }}
+                    onClick={() => setUseGlobal(true)}
+                  >
+                    ● Use Global ({Math.round(globalThreshold * 100)}%)
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-glass"
+                    style={{
+                      fontSize: '0.72rem',
+                      padding: '4px 10px',
+                      background: !useGlobal ? 'rgba(168, 85, 247, 0.25)' : 'transparent',
+                      color: !useGlobal ? '#c084fc' : 'var(--text-muted)',
+                      borderColor: !useGlobal ? '#a855f7' : 'rgba(255,255,255,0.08)',
+                      fontWeight: !useGlobal ? 700 : 500
+                    }}
+                    onClick={() => setUseGlobal(false)}
+                  >
+                    Custom Camera Threshold
+                  </button>
+                </div>
               </div>
-              <input
-                type="range"
-                min="0.2"
-                max="0.9"
-                step="0.05"
-                value={confidence}
-                onChange={(e) => setConfidence(parseFloat(e.target.value))}
-                style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
-              />
+
+              {useGlobal ? (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', padding: '10px 12px', background: 'rgba(6, 182, 212, 0.08)', border: '1px solid rgba(6, 182, 212, 0.2)', borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    Active policy: <b style={{ color: 'var(--accent-cyan)' }}>Inheriting Global System Threshold ({Math.round(globalThreshold * 100)}%)</b>.
+                  </div>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-dim)' }}>Configured in Control Panel</span>
+                </div>
+              ) : (
+                <div style={{ paddingTop: '6px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.78rem', marginBottom: '6px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Camera Individual Threshold:</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: '#c084fc', fontWeight: 700 }}>
+                      {Math.round(confidence * 100)}% {confidence <= 0.40 ? '(High Sensitivity)' : (confidence >= 0.70 ? '(Strict Filter)' : '(Balanced)')}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.20"
+                    max="0.95"
+                    step="0.05"
+                    value={confidence}
+                    onChange={(e) => setConfidence(parseFloat(e.target.value))}
+                    style={{ width: '100%', accentColor: '#a855f7' }}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--text-dim)', marginTop: '4px' }}>
+                    <span>20% (Ultra Sensitive, catches faint / distant activity)</span>
+                    <span>50% (Standard)</span>
+                    <span>95% (Maximum Precision, requires direct view)</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '14px' }}>

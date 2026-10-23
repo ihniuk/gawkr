@@ -98,13 +98,15 @@ class AIInferenceEngine:
             print(f"AI Inference Engine: YOLO initialization notice: {e}")
             self.model = None
 
-    def detect(self, frame: np.ndarray, settings: CameraSettings, is_simulation: bool = False) -> Tuple[List[DetectionObject], float]:
+    def detect(self, frame: np.ndarray, settings: CameraSettings, is_simulation: bool = False, effective_threshold: Optional[float] = None) -> Tuple[List[DetectionObject], float]:
         """
         Runs neural network object detection on the frame with true spatial perception and zone filtering.
         Returns: (List[DetectionObject], inference_latency_ms)
         """
         t0 = time.time()
         detected_objects: List[DetectionObject] = []
+        
+        user_conf = effective_threshold if effective_threshold is not None else getattr(settings, 'confidence_threshold', 0.50)
         
         if is_simulation:
             now = time.time()
@@ -122,8 +124,7 @@ class AIInferenceEngine:
                 conf = 0.94
                 label = "person"
                 
-                req_conf = getattr(settings, 'confidence_threshold', 0.45)
-                if label in settings.enabled_classes and conf >= req_conf:
+                if label in settings.enabled_classes and conf >= user_conf:
                     center_x = (box[1] + box[3]) / 2.0
                     bottom_y = box[2]
                     
@@ -150,9 +151,8 @@ class AIInferenceEngine:
                     target_ids.extend(LABEL_TO_COCO_ID[c])
             target_ids = list(set(target_ids)) if target_ids else [0, 1, 2, 3, 5, 7, 15, 16]
 
-            user_conf = getattr(settings, 'confidence_threshold', 0.45)
-            # Query YOLO with sensitivity down to 0.38 so night persons are not missed
-            yolo_query_conf = min(0.38, user_conf)
+            # Query YOLO with sensitivity down to 0.35 so night walkers are not missed
+            yolo_query_conf = min(0.35, user_conf)
 
             try:
                 # Run YOLO inference
@@ -180,19 +180,31 @@ class AIInferenceEngine:
                         if label not in settings.enabled_classes:
                             continue
 
-                        # Confidence filter:
-                        # For person: allow 0.40+ (robust against night IR low-contrast)
-                        # For vehicles/animals: enforce user_conf
-                        min_req = min(0.40, user_conf) if label == "person" else user_conf
-                        if conf < min_req:
-                            continue
-
                         # Extract normalized bounding box [ymin, xmin, ymax, xmax]
                         xmin, ymin, xmax, ymax = b.xyxyn[0].tolist()
                         ymin = max(0.0, min(1.0, float(ymin)))
                         xmin = max(0.0, min(1.0, float(xmin)))
                         ymax = max(0.0, min(1.0, float(ymax)))
                         xmax = max(0.0, min(1.0, float(xmax)))
+
+                        bw = xmax - xmin
+                        bh = ymax - ymin
+
+                        # Geometric filter for vehicles (eliminate wheelie bins, lampposts, fence posts):
+                        # Passenger vehicles (cars/trucks/vans) are wide or square. A tall, skinny vertical object
+                        # (width < 50% of height and width < 0.20) is physically a bin/post, NOT a vehicle!
+                        if label in ["car", "truck", "bus"]:
+                            if bw < (bh * 0.50) and bw < 0.20:
+                                continue # Reject tall narrow clutter like wheelie bins
+                            # Require at least 0.60 confidence for vehicles (or user_conf if higher)
+                            # to prevent shadows, recycling bins, and porch furniture from triggering car alerts
+                            vehicle_min = max(0.60, user_conf)
+                            if conf < vehicle_min:
+                                continue
+                        else:
+                            # Person / animals: respect configured threshold
+                            if conf < user_conf:
+                                continue
 
                         center_x = (xmin + xmax) / 2.0
                         center_y = (ymin + ymax) / 2.0

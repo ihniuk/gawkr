@@ -46,7 +46,8 @@ class DetectionZone(BaseModel):
     zone_type: str = "include" # "include" (only trigger inside), "exclude" (ignore inside), "privacy_mask" (blackout)
 
 class CameraSettings(BaseModel):
-    confidence_threshold: float = 0.45
+    confidence_threshold: float = 0.50
+    use_global_threshold: bool = True
     enabled_classes: List[str] = ["person", "car", "motorcycle", "dog", "cat"]
     zones: List[DetectionZone] = []
     recording_mode: str = "ai_event" # "continuous", "ai_event", "disabled"
@@ -196,11 +197,18 @@ class HardwareConfig(BaseModel):
     encoding_preset: str = "ultrafast" # "ultrafast", "veryfast", "fast", "medium"
     encoding_crf: int = 26
 
+class DetectionConfig(BaseModel):
+    global_confidence_threshold: float = 0.50 # Global AI threshold across all cameras (0.20 to 0.95)
+    person_min_confidence: float = 0.45       # Sensitive baseline for persons at night
+    vehicle_min_confidence: float = 0.60      # Strict baseline to filter bins, posts, clutter
+    animal_min_confidence: float = 0.45
+
 class SystemSettings(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     ai_vision: AIVisionConfig = Field(default_factory=AIVisionConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     hardware: HardwareConfig = Field(default_factory=HardwareConfig)
+    detection: DetectionConfig = Field(default_factory=DetectionConfig)
 
 class DiscoveredDevice(BaseModel):
     ip: str

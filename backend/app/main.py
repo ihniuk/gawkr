@@ -354,6 +354,24 @@ async def update_settings(new_settings: SystemSettings, user: dict = Depends(req
         "disk_stats": get_storage_disk_stats()
     }
 
+@app.post("/api/settings/apply-global-threshold")
+async def apply_global_threshold_to_all(user: dict = Depends(require_admin)):
+    """Applies the current global detection threshold across all registered cameras."""
+    settings = get_system_settings()
+    global_thresh = getattr(settings.detection, 'global_confidence_threshold', 0.50)
+    cams = camera_manager.get_all()
+    updated_count = 0
+    for c in cams:
+        c.settings.confidence_threshold = global_thresh
+        c.settings.use_global_threshold = True
+        camera_manager.update(c.id, CameraUpdate(settings=c.settings))
+        updated_count += 1
+    return {
+        "status": "applied",
+        "threshold": global_thresh,
+        "updated_cameras": updated_count
+    }
+
 @app.post("/api/settings/test-ai-vision")
 async def test_ai_vision(config: AIVisionConfig, user: dict = Depends(require_admin)):
     """Generates a test frame and runs real-time natural language description via configured AI API."""

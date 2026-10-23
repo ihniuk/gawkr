@@ -213,6 +213,12 @@ export const api = {
     });
   },
 
+  async applyGlobalThreshold() {
+    return apiFetch('/settings/apply-global-threshold', {
+      method: 'POST'
+    });
+  },
+
   async testAiVision(config) {
     return apiFetch('/settings/test-ai-vision', {
       method: 'POST',

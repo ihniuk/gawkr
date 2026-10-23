@@ -48,6 +48,10 @@ export default function ControlPanel({ isAdmin, currentUser }) {
   const [resetNewPassword, setResetNewPassword] = useState('');
   const [isSubmittingReset, setIsSubmittingReset] = useState(false);
 
+  // Global AI Threshold State
+  const [isApplyingGlobal, setIsApplyingGlobal] = useState(false);
+  const [applyGlobalFeedback, setApplyGlobalFeedback] = useState('');
+
   const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
   const loadSettings = async () => {
@@ -62,6 +66,14 @@ export default function ControlPanel({ isAdmin, currentUser }) {
           video_encoder: 'auto',
           encoding_preset: 'ultrafast',
           encoding_crf: 26
+        };
+      }
+      if (!s.detection) {
+        s.detection = {
+          global_confidence_threshold: 0.50,
+          person_min_confidence: 0.45,
+          vehicle_min_confidence: 0.60,
+          animal_min_confidence: 0.45
         };
       }
       setSettings(s);
@@ -102,6 +114,23 @@ export default function ControlPanel({ isAdmin, currentUser }) {
       loadUsers();
     }
   }, [activeTab]);
+
+  const handleApplyGlobalThreshold = async () => {
+    if (!settings) return;
+    setIsApplyingGlobal(true);
+    setApplyGlobalFeedback('');
+    try {
+      // First save current system settings so any slider adjustment persists
+      await api.updateSettings(settings);
+      const res = await api.applyGlobalThreshold();
+      setApplyGlobalFeedback(`✓ Applied ${Math.round(res.threshold * 100)}% threshold to all ${res.updated_cameras} registered cameras!`);
+      setTimeout(() => setApplyGlobalFeedback(''), 4500);
+    } catch (err) {
+      setApplyGlobalFeedback(`✕ Failed: ${err.message}`);
+    } finally {
+      setIsApplyingGlobal(false);
+    }
+  };
 
   const handleCreateUser = async (e) => {
     if (e) e.preventDefault();
@@ -930,6 +959,149 @@ export default function ControlPanel({ isAdmin, currentUser }) {
       {/* ----------------- TAB 2: AI VISION ENHANCEMENT ----------------- */}
       {activeTab === 'ai_vision' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Master Global AI Detection & Alert Threshold Card */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+              <div>
+                <h3 style={{ fontSize: '1.05rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Cpu size={18} color="var(--accent-cyan)" /> Master AI Detection & Alert Sensitivity
+                </h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  Global confidence baseline across all surveillance feeds. Cameras set to "Use Global" follow this threshold automatically.
+                </p>
+              </div>
+
+              {isAdmin && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <button
+                    type="button"
+                    className="btn-glass"
+                    onClick={handleApplyGlobalThreshold}
+                    disabled={isApplyingGlobal}
+                    style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', borderColor: 'rgba(6, 182, 212, 0.4)' }}
+                  >
+                    <Sliders size={13} className={isApplyingGlobal ? 'spin' : ''} />
+                    <span>{isApplyingGlobal ? 'Applying to Cameras...' : 'Apply Global Threshold to All Cameras'}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {applyGlobalFeedback && (
+              <div style={{
+                background: applyGlobalFeedback.startsWith('✓') ? 'rgba(16, 185, 129, 0.12)' : 'rgba(244, 63, 94, 0.12)',
+                border: `1px solid ${applyGlobalFeedback.startsWith('✓') ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`,
+                color: applyGlobalFeedback.startsWith('✓') ? 'var(--accent-emerald)' : '#fb7185',
+                padding: '8px 12px',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                marginBottom: '14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px'
+              }}>
+                {applyGlobalFeedback}
+              </div>
+            )}
+
+            {/* Global Slider */}
+            <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '16px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.06)', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-main)' }}>
+                  System-Wide Confidence Threshold
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.8rem',
+                  fontWeight: 700,
+                  padding: '3px 10px',
+                  borderRadius: '6px',
+                  background: (settings.detection?.global_confidence_threshold ?? 0.50) <= 0.40 ? 'rgba(6, 182, 212, 0.15)' : ((settings.detection?.global_confidence_threshold ?? 0.50) >= 0.70 ? 'rgba(168, 85, 247, 0.15)' : 'rgba(16, 185, 129, 0.15)'),
+                  color: (settings.detection?.global_confidence_threshold ?? 0.50) <= 0.40 ? 'var(--accent-cyan)' : ((settings.detection?.global_confidence_threshold ?? 0.50) >= 0.70 ? '#c084fc' : 'var(--accent-emerald)')
+                }}>
+                  {Math.round((settings.detection?.global_confidence_threshold ?? 0.50) * 100)}% {(settings.detection?.global_confidence_threshold ?? 0.50) <= 0.40 ? '(High Sensitivity)' : ((settings.detection?.global_confidence_threshold ?? 0.50) >= 0.70 ? '(Strict Filter)' : '(Balanced)')}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.20"
+                max="0.95"
+                step="0.05"
+                value={settings.detection?.global_confidence_threshold ?? 0.50}
+                onChange={(e) => setSettings({
+                  ...settings,
+                  detection: {
+                    ...(settings.detection || {}),
+                    global_confidence_threshold: parseFloat(e.target.value)
+                  }
+                })}
+                style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
+              />
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: 'var(--text-dim)', marginTop: '4px' }}>
+                <span>20% (Ultra sensitive, catches faint/distant movement)</span>
+                <span>50% (Recommended default)</span>
+                <span>95% (Maximum precision, strict)</span>
+              </div>
+            </div>
+
+            {/* Granular Object Class Baselines */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+              <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '14px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Person Baseline Sensitivity</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem', color: 'var(--accent-emerald)', fontWeight: 700 }}>
+                    {Math.round((settings.detection?.person_min_confidence ?? 0.45) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.30"
+                  max="0.75"
+                  step="0.05"
+                  value={settings.detection?.person_min_confidence ?? 0.45}
+                  onChange={(e) => setSettings({
+                    ...settings,
+                    detection: {
+                      ...(settings.detection || {}),
+                      person_min_confidence: parseFloat(e.target.value)
+                    }
+                  })}
+                  style={{ width: '100%', accentColor: 'var(--accent-emerald)' }}
+                />
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)', display: 'block', marginTop: '4px' }}>
+                  Ensures low-contrast night walkers and approaching individuals are caught reliably.
+                </span>
+              </div>
+
+              <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '14px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>Vehicle Clutter Filter Threshold</span>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.74rem', color: '#38bdf8', fontWeight: 700 }}>
+                    {Math.round((settings.detection?.vehicle_min_confidence ?? 0.60) * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.45"
+                  max="0.85"
+                  step="0.05"
+                  value={settings.detection?.vehicle_min_confidence ?? 0.60}
+                  onChange={(e) => setSettings({
+                    ...settings,
+                    detection: {
+                      ...(settings.detection || {}),
+                      vehicle_min_confidence: parseFloat(e.target.value)
+                    }
+                  })}
+                  style={{ width: '100%', accentColor: '#38bdf8' }}
+                />
+                <span style={{ fontSize: '0.68rem', color: 'var(--text-dim)', display: 'block', marginTop: '4px' }}>
+                  Filters out wheelie bins, lampposts, and yard clutter from falsely triggering vehicle alerts.
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
               <div>
