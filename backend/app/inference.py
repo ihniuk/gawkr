@@ -91,9 +91,10 @@ class AIInferenceEngine:
         try:
             from ultralytics import YOLO
             import torch
+            torch.set_num_threads(2)
             # Initialize real YOLOv8n deep neural network
             self.model = YOLO("yolov8n.pt")
-            print("AI Inference Engine: YOLOv8n Neural Network loaded successfully.")
+            print("AI Inference Engine: YOLOv8n Neural Network loaded successfully (optimized 2 CPU threads).")
         except Exception as e:
             print(f"AI Inference Engine: YOLO initialization notice: {e}")
             self.model = None
@@ -155,12 +156,13 @@ class AIInferenceEngine:
             yolo_query_conf = min(0.35, user_conf)
 
             try:
-                # Run YOLO inference
+                # Run YOLO inference with optimal 480px neural receptive field
                 results = self.model(
                     frame,
                     verbose=False,
                     conf=yolo_query_conf,
-                    classes=target_ids
+                    classes=target_ids,
+                    imgsz=480
                 )
                 
                 if results and len(results) > 0:

@@ -274,7 +274,15 @@ def save_snapshot_image(camera_id: str, frame: np.ndarray, event_id: str) -> str
 
 # ----------------- SYSTEM SETTINGS PERSISTENCE -----------------
 
+_cached_sys_settings: Optional[SystemSettings] = None
+_cached_sys_settings_time: float = 0.0
+
 def get_system_settings() -> SystemSettings:
+    global _cached_sys_settings, _cached_sys_settings_time
+    now = time.time()
+    if _cached_sys_settings is not None and (now - _cached_sys_settings_time) < 2.0:
+        return _cached_sys_settings
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT value_json FROM system_settings WHERE key = 'global'")
@@ -290,6 +298,8 @@ def get_system_settings() -> SystemSettings:
                 settings.storage.recordings_dir = str(RECORDINGS_DIR)
             if not settings.storage.snapshots_dir:
                 settings.storage.snapshots_dir = str(SNAPSHOTS_DIR)
+            _cached_sys_settings = settings
+            _cached_sys_settings_time = now
             return settings
         except Exception:
             pass
@@ -305,9 +315,14 @@ def get_system_settings() -> SystemSettings:
         )
     )
     save_system_settings(defaults)
+    _cached_sys_settings = defaults
+    _cached_sys_settings_time = now
     return defaults
 
 def save_system_settings(settings: SystemSettings):
+    global _cached_sys_settings, _cached_sys_settings_time
+    _cached_sys_settings = settings
+    _cached_sys_settings_time = time.time()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""

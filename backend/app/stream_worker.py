@@ -34,6 +34,7 @@ class CameraStreamWorker:
         self.raw_frame_lock = threading.Lock()
         self.raw_frame_time = 0.0
         self.capture_thread: Optional[threading.Thread] = None
+        self.ai_thread: Optional[threading.Thread] = None
         
         # Pre-roll ring buffer (stores recent frames in memory)
         # 20 FPS * 4 seconds = 80 frames
@@ -66,15 +67,20 @@ class CameraStreamWorker:
             if not self.camera.is_simulation:
                 self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
                 self.capture_thread.start()
+                if getattr(self.camera.settings, 'ai_enabled', True):
+                    self.ai_thread = threading.Thread(target=self._ai_loop, daemon=True)
+                    self.ai_thread.start()
             self.thread = threading.Thread(target=self._run_loop, daemon=True)
             self.thread.start()
 
     def stop(self):
         self.is_running = False
         if self.capture_thread and self.capture_thread.is_alive():
-            self.capture_thread.join(timeout=2.0)
+            self.capture_thread.join(timeout=1.0)
+        if self.ai_thread and self.ai_thread.is_alive():
+            self.ai_thread.join(timeout=1.0)
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
+            self.thread.join(timeout=1.0)
 
     def _generate_synthetic_frame(self, t: float) -> np.ndarray:
         """Generates a realistic surveillance camera simulation with moving objects and timecode."""
@@ -467,8 +473,6 @@ class CameraStreamWorker:
                 self.raw_frame = frame
                 self.raw_frame_time = now
                 self.resolution = f"{frame.shape[1]}x{frame.shape[0]}"
-                
-            time.sleep(0.005)
 
         if cap:
             try:
@@ -477,9 +481,8 @@ class CameraStreamWorker:
                 pass
 
     def _run_loop(self):
+        """Dedicated high-speed live rendering pipeline running at full camera FPS (15-30 FPS)."""
         self.camera.is_online = True
-        last_infer_time = 0.0
-        infer_interval = 1.0 / max(1, self.camera.settings.sub_fps)
         last_processed_time = 0.0
         
         while self.is_running:
@@ -488,168 +491,64 @@ class CameraStreamWorker:
             if self.camera.is_simulation:
                 frame = self._generate_synthetic_frame(loop_start)
                 self.resolution = f"{frame.shape[1]}x{frame.shape[0]}"
-                time.sleep(0.045) # ~22 FPS
+                time.sleep(0.04) # ~25 FPS
             else:
                 with self.raw_frame_lock:
                     if self.raw_frame is None or self.raw_frame_time == last_processed_time:
-                        time.sleep(0.01)
-                        continue
-                    frame = self.raw_frame.copy()
-                    last_processed_time = self.raw_frame_time
+                        frame = None
+                    else:
+                        frame = self.raw_frame
+                        last_processed_time = self.raw_frame_time
 
-            # Apply privacy masks immediately to raw frame before buffering, detection, or snapshots
+                if frame is None:
+                    time.sleep(0.005)
+                    continue
+
+            fh, fw = frame.shape[:2]
+
+            # Fast preview frame (downscaled if >960w to conserve bandwidth and avoid heavy copies)
+            if fw > 960:
+                preview_frame = cv2.resize(frame, (960, int(fh * 960 / fw)))
+            else:
+                preview_frame = frame.copy()
+
+            h, w = preview_frame.shape[:2]
+
+            # Apply privacy masks directly to preview frame
             if hasattr(self.camera, 'settings') and self.camera.settings.zones:
-                fh, fw = frame.shape[:2]
                 for z in self.camera.settings.zones:
                     if getattr(z, 'enabled', True) and getattr(z, 'zone_type', 'include') == 'privacy_mask' and len(z.points) >= 3:
-                        mask_pts = np.array([[int(p[0] * fw), int(p[1] * fh)] for p in z.points], np.int32)
-                        cv2.fillPoly(frame, [mask_pts], (16, 16, 18))
-                        cv2.putText(frame, "PRIVACY MASK", (mask_pts[0][0] + 6, max(20, mask_pts[0][1] + 18)),
+                        mask_pts = np.array([[int(p[0] * w), int(p[1] * h)] for p in z.points], np.int32)
+                        cv2.fillPoly(preview_frame, [mask_pts], (16, 16, 18))
+                        cv2.putText(preview_frame, "PRIVACY MASK", (mask_pts[0][0] + 6, max(20, mask_pts[0][1] + 18)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.42, (110, 110, 120), 1)
 
-            # Add frame to rolling pre-roll buffer (scaled down to 720p for fast encoding)
-            if self.frame_counter % 2 == 0: # Store alternate frames for ~10-12 FPS recording buffer
-                with self.frame_lock:
-                    self.pre_roll_buffer.append(cv2.resize(frame, (640, 360)))
-
-            # Run AI Inference if enabled and interval has elapsed
-            if self.camera.settings.ai_enabled and (loop_start - last_infer_time >= infer_interval):
-                last_infer_time = loop_start
-
-                # Determine effective threshold: Global system setting vs individual camera override
-                effective_threshold = getattr(self.camera.settings, 'confidence_threshold', 0.50)
-                if getattr(self.camera.settings, 'use_global_threshold', True):
-                    try:
-                        from app.storage import get_system_settings
-                        sys_settings = get_system_settings()
-                        if hasattr(sys_settings, 'detection') and hasattr(sys_settings.detection, 'global_confidence_threshold'):
-                            effective_threshold = sys_settings.detection.global_confidence_threshold
-                    except Exception:
-                        pass
-
-                detections, lat_ms = inference_engine.detect(
-                    frame,
-                    self.camera.settings,
-                    is_simulation=self.camera.is_simulation,
-                    effective_threshold=effective_threshold
-                )
-                self.ai_latency_ms = lat_ms
-                
-                # Adaptive threshold for YOLOv8 neural detections
-                alert_detections = [
-                    d for d in detections
-                    if (d.confidence >= min(0.40, effective_threshold) if d.label == "person" else d.confidence >= effective_threshold)
-                ]
-
-                # Evaluate vehicle stationary vs motion state
-                evaluated_detections = self._evaluate_vehicle_motion(alert_detections, loop_start)
-                self.latest_detections = evaluated_detections
-
-                # Discard stationary vehicles that have not moved from alert trigger consideration
-                active_trigger_detections = [
-                    d for d in evaluated_detections
-                    if not (d.label in {"car", "truck", "motorcycle", "bus"} and getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
-                ]
-                
-                # Multi-frame confirmation tracking (prevents false alerts on single-frame glitches)
-                min_frames = min(2, getattr(self.camera.settings, 'min_confirmation_frames', 2))
-                cooldown = getattr(self.camera.settings, 'alert_cooldown_seconds', 45)
-                
-                if active_trigger_detections:
-                    self.consecutive_detection_count += 1
-                else:
-                    self.consecutive_detection_count = max(0, self.consecutive_detection_count - 1)
-                
-                # Confirm alert only if consecutive threshold met AND cooldown elapsed
-                if (self.consecutive_detection_count >= min_frames) and (loop_start - self.last_alert_time >= cooldown):
-                    self.last_alert_time = loop_start
-                    self.consecutive_detection_count = 0 # reset counter
-                    
-                    # Update last_alert_pos for all currently detected vehicles so they won't repeat
-                    for d in evaluated_detections:
-                        if d.label in {"car", "truck", "motorcycle", "bus"}:
-                            dcx = (d.box[1] + d.box[3]) / 2.0
-                            dcy = (d.box[0] + d.box[2]) / 2.0
-                            for tracked in self.tracked_vehicles:
-                                tcx, tcy = tracked["centroid"]
-                                if math.hypot(dcx - tcx, dcy - tcy) < 0.10:
-                                    tracked["last_alert_pos"] = (dcx, dcy)
-                    
-                    event_id = str(uuid.uuid4())[:8]
-                    # Capture pristine snapshot
-                    snap_url = save_snapshot_image(self.camera.id, frame, event_id)
-                    
-                    rec_mode = getattr(self.camera.settings, 'recording_mode', 'ai_event')
-                    is_rec_enabled = rec_mode in ['ai_event', 'continuous']
-                    clip_url = f"/api/recordings/{self.camera.id}_{event_id}.mp4" if is_rec_enabled else None
-
-                    # If an active object triggered the alert (e.g. Person), prioritize active objects in event
-                    event_objects = active_trigger_detections if active_trigger_detections else evaluated_detections
-
-                    event = DetectionEvent(
-                        id=event_id,
-                        camera_id=self.camera.id,
-                        camera_name=self.camera.name,
-                        timestamp=loop_start,
-                        objects=event_objects,
-                        snapshot_url=snap_url,
-                        video_clip_url=clip_url
-                    )
-                    save_event_to_db(event)
-                    
-                    if self.notification_callback:
-                        self.notification_callback(event)
-                        
-                    # Spawn AI Vision enhancement & notifications with anti-repetition context
-                    snap_path = SNAPSHOTS_DIR / f"{self.camera.id}_{event_id}.jpg"
-                    has_stationary_cars = any(d.label in {"car", "truck", "motorcycle", "bus"} and getattr(d, 'is_stationary', False) for d in evaluated_detections)
-                    stat_note = "A project or resident vehicle is parked stationary in the driveway and has not moved." if has_stationary_cars else None
-
-                    threading.Thread(
-                        target=self._process_ai_vision_and_dispatch,
-                        args=(event, frame.copy(), snap_path, stat_note),
-                        daemon=True
-                    ).start()
-                        
-                    # Trigger asynchronous MP4 recording if mode is ai_event or continuous
-                    if self.camera.settings.recording_mode in ['ai_event', 'continuous']:
-                        with self.frame_lock:
-                            pre_roll = list(self.pre_roll_buffer)
-                        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 6)
-                        self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
-
-            # Draw bounding boxes & zones directly on live view frame
-            annotated_frame = frame.copy()
-            h, w = annotated_frame.shape[:2]
-            
             # Draw zones
             if hasattr(self.camera, 'settings') and self.camera.settings.zones:
                 for zone in self.camera.settings.zones:
                     if getattr(zone, 'enabled', True) and len(zone.points) >= 3:
                         ztype = getattr(zone, 'zone_type', 'include')
                         if ztype == 'privacy_mask':
-                            continue # Privacy mask is already opaque on frame
+                            continue
                         pts = np.array([[int(p[0] * w), int(p[1] * h)] for p in zone.points], np.int32)
                         if ztype == 'exclude':
-                            # Orange/Red outline for exclusion zone
-                            cv2.polylines(annotated_frame, [pts], True, (40, 70, 245), 2)
-                            cv2.putText(annotated_frame, f"EXCLUDE: {zone.name.upper()}", (pts[0][0], max(16, pts[0][1] - 8)),
+                            cv2.polylines(preview_frame, [pts], True, (40, 70, 245), 2)
+                            cv2.putText(preview_frame, f"EXCLUDE: {zone.name.upper()}", (pts[0][0], max(16, pts[0][1] - 8)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (40, 70, 245), 1)
                         else:
-                            # Cyan/Emerald outline for detection inclusion zone
-                            cv2.polylines(annotated_frame, [pts], True, (0, 220, 140), 2)
-                            cv2.putText(annotated_frame, f"ZONE: {zone.name.upper()}", (pts[0][0], max(16, pts[0][1] - 8)),
+                            cv2.polylines(preview_frame, [pts], True, (0, 220, 140), 2)
+                            cv2.putText(preview_frame, f"ZONE: {zone.name.upper()}", (pts[0][0], max(16, pts[0][1] - 8)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 220, 140), 1)
 
-            # Draw AI Detections
-            for det in self.latest_detections:
+            # Draw AI Detections (asynchronously computed from background AI worker)
+            for det in list(self.latest_detections):
                 ymin, xmin, ymax, xmax = det.box
                 bx1, by1 = int(xmin * w), int(ymin * h)
                 bx2, by2 = int(xmax * w), int(ymax * h)
                 
                 is_stat = getattr(det, 'is_stationary', False)
                 if is_stat:
-                    color = (130, 130, 140) # Dim gray/slate for parked/stationary vehicles
+                    color = (130, 130, 140)
                     badge_text = f"{det.label.upper()} [PARKED]"
                 else:
                     color = (0, 230, 255) if det.label == "person" else (255, 160, 50)
@@ -657,30 +556,28 @@ class CameraStreamWorker:
                     if det.label in {"car", "truck", "motorcycle", "bus"} and getattr(det, 'has_moved', False):
                         badge_text += " [MOVING]"
 
-                cv2.rectangle(annotated_frame, (bx1, by1), (bx2, by2), color, 2)
+                cv2.rectangle(preview_frame, (bx1, by1), (bx2, by2), color, 2)
                 (tw, th), _ = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(annotated_frame, (bx1, by1 - th - 10), (bx1 + tw + 10, by1), color, -1)
-                cv2.putText(annotated_frame, badge_text, (bx1 + 5, by1 - 5),
+                cv2.rectangle(preview_frame, (bx1, by1 - th - 10), (bx1 + tw + 10, by1), color, -1)
+                cv2.putText(preview_frame, badge_text, (bx1 + 5, by1 - 5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (10, 15, 25), 1)
 
             # Create lightweight web-preview JPEG (max 960w, saves ~85% bandwidth & browser rendering CPU)
-            h, w = annotated_frame.shape[:2]
-            if w > 960:
-                preview_frame = cv2.resize(annotated_frame, (960, int(h * 960 / w)))
-            else:
-                preview_frame = annotated_frame
-
             ret, jpeg = cv2.imencode('.jpg', preview_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 74])
             if ret:
                 jpeg_bytes = jpeg.tobytes()
                 with self.frame_lock:
-                    self.latest_frame = frame # Keep full resolution original for 4K/1080p snapshots & clips
+                    self.latest_frame = frame
                     self.latest_jpeg = jpeg_bytes
 
                 self.frame_counter += 1
                 self.byte_counter += len(jpeg_bytes)
 
-            # Calculate telemetry stats every 1 second
+            # Add frame to rolling pre-roll buffer (scaled down to 640x360 for fast encoding)
+            if self.frame_counter % 2 == 0:
+                with self.frame_lock:
+                    self.pre_roll_buffer.append(cv2.resize(frame, (640, int(fh * 640 / fw))))
+
             now = time.time()
             if now - self.last_stat_time >= 1.0:
                 elapsed = now - self.last_stat_time
@@ -689,6 +586,129 @@ class CameraStreamWorker:
                 self.frame_counter = 0
                 self.byte_counter = 0
                 self.last_stat_time = now
+
+    def _ai_loop(self):
+        """Dedicated background thread for YOLOv8 neural detection & event management."""
+        infer_interval = 1.0 / max(1, getattr(self.camera.settings, 'sub_fps', 8))
+        last_processed_time = 0.0
+        
+        while self.is_running:
+            loop_start = time.time()
+            if not getattr(self.camera.settings, 'ai_enabled', True):
+                time.sleep(0.5)
+                continue
+                
+            frame = None
+            with self.raw_frame_lock:
+                if self.raw_frame is not None and self.raw_frame_time != last_processed_time:
+                    frame = self.raw_frame
+                    last_processed_time = self.raw_frame_time
+                    
+            if frame is None:
+                time.sleep(0.02)
+                continue
+                
+            effective_threshold = getattr(self.camera.settings, 'confidence_threshold', 0.50)
+            if getattr(self.camera.settings, 'use_global_threshold', True):
+                try:
+                    from app.storage import get_system_settings
+                    sys_settings = get_system_settings()
+                    if hasattr(sys_settings, 'detection') and hasattr(sys_settings.detection, 'global_confidence_threshold'):
+                        effective_threshold = sys_settings.detection.global_confidence_threshold
+                except Exception:
+                    pass
+
+            # Fast downscale for neural network if frame width > 640
+            fh, fw = frame.shape[:2]
+            if fw > 640:
+                ai_input = cv2.resize(frame, (640, int(fh * 640 / fw)))
+            else:
+                ai_input = frame
+
+            detections, lat_ms = inference_engine.detect(
+                ai_input,
+                self.camera.settings,
+                is_simulation=self.camera.is_simulation,
+                effective_threshold=effective_threshold
+            )
+            self.ai_latency_ms = lat_ms
+            
+            alert_detections = [
+                d for d in detections
+                if (d.confidence >= min(0.40, effective_threshold) if d.label == "person" else d.confidence >= effective_threshold)
+            ]
+
+            evaluated_detections = self._evaluate_vehicle_motion(alert_detections, loop_start)
+            self.latest_detections = evaluated_detections
+
+            active_trigger_detections = [
+                d for d in evaluated_detections
+                if not (d.label in {"car", "truck", "motorcycle", "bus"} and getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
+            ]
+            
+            min_frames = min(2, getattr(self.camera.settings, 'min_confirmation_frames', 2))
+            cooldown = getattr(self.camera.settings, 'alert_cooldown_seconds', 45)
+            
+            if active_trigger_detections:
+                self.consecutive_detection_count += 1
+            else:
+                self.consecutive_detection_count = max(0, self.consecutive_detection_count - 1)
+            
+            if (self.consecutive_detection_count >= min_frames) and (loop_start - self.last_alert_time >= cooldown):
+                self.last_alert_time = loop_start
+                self.consecutive_detection_count = 0
+                
+                for d in evaluated_detections:
+                    if d.label in {"car", "truck", "motorcycle", "bus"}:
+                        dcx = (d.box[1] + d.box[3]) / 2.0
+                        dcy = (d.box[0] + d.box[2]) / 2.0
+                        for tracked in self.tracked_vehicles:
+                            tcx, tcy = tracked["centroid"]
+                            if math.hypot(dcx - tcx, dcy - tcy) < 0.10:
+                                tracked["last_alert_pos"] = (dcx, dcy)
+                
+                event_id = str(uuid.uuid4())[:8]
+                snap_url = save_snapshot_image(self.camera.id, frame, event_id)
+                
+                rec_mode = getattr(self.camera.settings, 'recording_mode', 'ai_event')
+                is_rec_enabled = rec_mode in ['ai_event', 'continuous']
+                clip_url = f"/api/recordings/{self.camera.id}_{event_id}.mp4" if is_rec_enabled else None
+
+                event_objects = active_trigger_detections if active_trigger_detections else evaluated_detections
+
+                event = DetectionEvent(
+                    id=event_id,
+                    camera_id=self.camera.id,
+                    camera_name=self.camera.name,
+                    timestamp=loop_start,
+                    objects=event_objects,
+                    snapshot_url=snap_url,
+                    video_clip_url=clip_url
+                )
+                save_event_to_db(event)
+                
+                if self.notification_callback:
+                    self.notification_callback(event)
+                    
+                snap_path = SNAPSHOTS_DIR / f"{self.camera.id}_{event_id}.jpg"
+                has_stationary_cars = any(d.label in {"car", "truck", "motorcycle", "bus"} and getattr(d, 'is_stationary', False) for d in evaluated_detections)
+                stat_note = "A project or resident vehicle is parked stationary in the driveway and has not moved." if has_stationary_cars else None
+
+                threading.Thread(
+                    target=self._process_ai_vision_and_dispatch,
+                    args=(event, frame.copy(), snap_path, stat_note),
+                    daemon=True
+                ).start()
+                    
+                if self.camera.settings.recording_mode in ['ai_event', 'continuous']:
+                    with self.frame_lock:
+                        pre_roll = list(self.pre_roll_buffer)
+                    post_roll = getattr(self.camera.settings, 'post_roll_seconds', 6)
+                    self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
+
+            elapsed = time.time() - loop_start
+            sleep_needed = max(0.01, infer_interval - elapsed)
+            time.sleep(sleep_needed)
 
     def get_latest_jpeg(self) -> Optional[bytes]:
         with self.frame_lock:

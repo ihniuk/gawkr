@@ -226,7 +226,9 @@ async def get_camera_stream(camera_id: str, ticket: str = Query(...)):
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 )
-            await asyncio.sleep(0.03) # Poll at ~30 FPS, yield only on fresh frames
+                await asyncio.sleep(0.010)
+            else:
+                await asyncio.sleep(0.008)
 
     return StreamingResponse(
         frame_generator(),
