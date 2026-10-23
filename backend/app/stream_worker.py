@@ -1,3 +1,6 @@
+import os
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;5000000"
+
 import threading
 import time
 import uuid
@@ -25,6 +28,12 @@ class CameraStreamWorker:
         self.latest_jpeg: Optional[bytes] = None
         self.latest_detections = []
         self.frame_lock = threading.Lock()
+
+        # Decoupled high-speed raw RTSP capture buffer
+        self.raw_frame: Optional[np.ndarray] = None
+        self.raw_frame_lock = threading.Lock()
+        self.raw_frame_time = 0.0
+        self.capture_thread: Optional[threading.Thread] = None
         
         # Pre-roll ring buffer (stores recent frames in memory)
         # 20 FPS * 4 seconds = 80 frames
@@ -54,11 +63,16 @@ class CameraStreamWorker:
     def start(self):
         if not self.is_running:
             self.is_running = True
+            if not self.camera.is_simulation:
+                self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+                self.capture_thread.start()
             self.thread = threading.Thread(target=self._run_loop, daemon=True)
             self.thread.start()
 
     def stop(self):
         self.is_running = False
+        if self.capture_thread and self.capture_thread.is_alive():
+            self.capture_thread.join(timeout=2.0)
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2.0)
 
@@ -404,17 +418,69 @@ class CameraStreamWorker:
         self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
         return event
 
-    def _run_loop(self):
+    def _capture_loop(self):
+        """Dedicated high-speed thread that drains the RTSP buffer in real-time over TCP."""
+        stream_url = self.camera.sub_stream_url or self.camera.main_stream_url
         cap = None
-        self.camera.is_online = True
+        consecutive_errors = 0
+        last_success_time = time.time()
         
-        if not self.camera.is_simulation:
-            stream_url = self.camera.sub_stream_url or self.camera.main_stream_url
-            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        while self.is_running:
+            if cap is None or not cap.isOpened():
+                self.camera.is_online = False
+                try:
+                    if cap:
+                        cap.release()
+                except Exception:
+                    pass
+                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                time.sleep(1.0)
+                consecutive_errors = 0
+                last_success_time = time.time()
+                continue
+                
+            ret, frame = cap.read()
+            now = time.time()
+            if not ret or frame is None:
+                consecutive_errors += 1
+                self.dropped_frames += 1
+                # If reading fails continuously for > 2 seconds or 20 frames, force a clean socket reconnect
+                if consecutive_errors > 20 or (now - last_success_time > 2.5):
+                    self.camera.is_online = False
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap = None
+                    consecutive_errors = 0
+                    time.sleep(0.5)
+                else:
+                    time.sleep(0.02)
+                continue
+                
+            consecutive_errors = 0
+            last_success_time = now
+            self.camera.is_online = True
+            
+            with self.raw_frame_lock:
+                self.raw_frame = frame
+                self.raw_frame_time = now
+                self.resolution = f"{frame.shape[1]}x{frame.shape[0]}"
+                
+            time.sleep(0.005)
 
+        if cap:
+            try:
+                cap.release()
+            except Exception:
+                pass
+
+    def _run_loop(self):
+        self.camera.is_online = True
         last_infer_time = 0.0
         infer_interval = 1.0 / max(1, self.camera.settings.sub_fps)
+        last_processed_time = 0.0
         
         while self.is_running:
             loop_start = time.time()
@@ -424,19 +490,12 @@ class CameraStreamWorker:
                 self.resolution = f"{frame.shape[1]}x{frame.shape[0]}"
                 time.sleep(0.045) # ~22 FPS
             else:
-                if cap is None or not cap.isOpened():
-                    self.camera.is_online = False
-                    time.sleep(2.0)
-                    cap = cv2.VideoCapture(self.camera.sub_stream_url or self.camera.main_stream_url, cv2.CAP_FFMPEG)
-                    continue
-                
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    self.dropped_frames += 1
-                    time.sleep(0.05)
-                    continue
-                self.camera.is_online = True
-                self.resolution = f"{frame.shape[1]}x{frame.shape[0]}"
+                with self.raw_frame_lock:
+                    if self.raw_frame is None or self.raw_frame_time == last_processed_time:
+                        time.sleep(0.01)
+                        continue
+                    frame = self.raw_frame.copy()
+                    last_processed_time = self.raw_frame_time
 
             # Apply privacy masks immediately to raw frame before buffering, detection, or snapshots
             if hasattr(self.camera, 'settings') and self.camera.settings.zones:
@@ -630,9 +689,6 @@ class CameraStreamWorker:
                 self.frame_counter = 0
                 self.byte_counter = 0
                 self.last_stat_time = now
-
-        if cap:
-            cap.release()
 
     def get_latest_jpeg(self) -> Optional[bytes]:
         with self.frame_lock:

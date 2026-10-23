@@ -217,14 +217,16 @@ async def get_camera_stream(camera_id: str, ticket: str = Query(...)):
         raise HTTPException(status_code=404, detail="Camera stream inactive")
 
     async def frame_generator():
+        last_frame_ref = None
         while True:
             jpeg = worker.get_latest_jpeg()
-            if jpeg:
+            if jpeg is not None and jpeg is not last_frame_ref:
+                last_frame_ref = jpeg
                 yield (
                     b"--frame\r\n"
                     b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
                 )
-            await asyncio.sleep(0.04) # ~25 FPS non-blocking cooperative async sleep
+            await asyncio.sleep(0.03) # Poll at ~30 FPS, yield only on fresh frames
 
     return StreamingResponse(
         frame_generator(),
