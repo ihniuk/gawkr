@@ -56,6 +56,10 @@ public class NotificationHelper {
     }
 
     public static void showSecurityAlert(Context context, String camName, String objects, String aiDesc, String snapshotUrl, String threatLevel) {
+        showSecurityAlert(context, camName, camName, objects, aiDesc, snapshotUrl, threatLevel);
+    }
+
+    public static void showSecurityAlert(Context context, String camId, String camName, String objects, String aiDesc, String snapshotUrl, String threatLevel) {
         createChannels(context);
 
         Intent intent = new Intent(context, MainActivity.class);
@@ -68,20 +72,24 @@ public class NotificationHelper {
         );
 
         int color = 0xFF10B981; // Safe (Emerald)
-        long[] vibration = new long[]{0, 200, 100, 200};
-        String threatBadge = "🟢 SAFE";
+        long[] vibration = new long[]{0, 150};
+        int priority = NotificationCompat.PRIORITY_DEFAULT;
+        String threatBadge = "🟢 Motion Detected";
 
         if ("Threat".equalsIgnoreCase(threatLevel)) {
             color = 0xFFEF4444; // Threat (Red)
             vibration = new long[]{0, 400, 150, 400, 150, 600};
             threatBadge = "🔴 THREAT DETECTED";
+            priority = NotificationCompat.PRIORITY_HIGH;
         } else if ("Suspicious".equalsIgnoreCase(threatLevel)) {
             color = 0xFFF59E0B; // Suspicious (Amber)
-            vibration = new long[]{0, 250, 150, 250, 150, 250};
+            vibration = new long[]{0, 250, 150, 250};
             threatBadge = "🟡 SUSPICIOUS ACTIVITY";
+            priority = NotificationCompat.PRIORITY_HIGH;
         }
 
-        String title = "🚨 " + camName.toUpperCase() + " • " + threatBadge;
+        String prefix = "Threat".equalsIgnoreCase(threatLevel) ? "🚨 " : ("Suspicious".equalsIgnoreCase(threatLevel) ? "⚠️ " : "GAWKR • ");
+        String title = prefix + camName.toUpperCase() + " • " + threatBadge;
         String content = (aiDesc != null && !aiDesc.isEmpty()) ? aiDesc : "Detected: " + objects;
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, ALERTS_CHANNEL_ID)
@@ -92,7 +100,8 @@ public class NotificationHelper {
                 .setColor(color)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setGroup("uk.ihni.gawkr.ALERTS")
+                .setPriority(priority)
                 .setVibrate(vibration);
 
         // Fetch snapshot image if present
@@ -117,7 +126,9 @@ public class NotificationHelper {
 
         try {
             NotificationManagerCompat managerCompat = NotificationManagerCompat.from(context);
-            int notificationId = (int) (System.currentTimeMillis() % 100000);
+            // Stable notification ID per camera so consecutive events update the existing card
+            // rather than filling the entire Android status bar with duplicate rows
+            int notificationId = Math.abs((camId != null ? camId : camName).toLowerCase().hashCode());
             managerCompat.notify(notificationId, builder.build());
         } catch (SecurityException ignored) {
         }

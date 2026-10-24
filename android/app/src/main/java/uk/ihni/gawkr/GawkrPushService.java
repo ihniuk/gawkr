@@ -18,6 +18,9 @@ import okhttp3.WebSocket;
 import okhttp3.WebSocketListener;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 public class GawkrPushService extends Service {
@@ -30,6 +33,17 @@ public class GawkrPushService extends Service {
     private Handler reconnectHandler;
     private boolean isDestroyed = false;
     private boolean isConnected = false;
+
+    // Deduplication cache to prevent re-alerting for the same event ID
+    private final LinkedHashMap<String, Long> notifiedEvents = new LinkedHashMap<String, Long>(100, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
+            return size() > 100;
+        }
+    };
+
+    // Per-camera alert cooldown (minimum 25s between repeat pushes for same camera)
+    private final Map<String, Long> cameraLastAlertTime = new ConcurrentHashMap<>();
 
     @Override
     public void onCreate() {
@@ -157,11 +171,48 @@ public class GawkrPushService extends Service {
 
     private void handleEventMessage(String jsonStr) {
         try {
-            JSONObject obj = new JSONObject(jsonStr);
-            String camName = obj.optString("camera_name", "Surveillance");
-            String aiDesc = obj.optString("ai_description", "");
-            String threatLevel = obj.optString("threat_level", "Safe");
-            String rawSnapUrl = obj.optString("snapshot_url", "");
+            JSONObject root = new JSONObject(jsonStr);
+            String msgType = root.optString("type", "");
+
+            // STRICT FILTER: Ignore telemetry updates, heartbeats, and non-alert messages!
+            if (!"DETECTION_ALERT".equals(msgType)) {
+                return;
+            }
+
+            JSONObject eventObj = root.optJSONObject("event");
+            if (eventObj == null) {
+                return;
+            }
+
+            String eventId = eventObj.optString("id", "");
+            if (eventId.isEmpty()) {
+                return;
+            }
+
+            // Deduplicate: If we already alerted for this event ID, ignore repeated updates
+            synchronized (notifiedEvents) {
+                if (notifiedEvents.containsKey(eventId)) {
+                    return;
+                }
+                notifiedEvents.put(eventId, System.currentTimeMillis());
+            }
+
+            String camId = eventObj.optString("camera_id", "default");
+            String camName = eventObj.optString("camera_name", "Surveillance");
+            String threatLevel = eventObj.optString("threat_level", "Safe");
+            String aiDesc = eventObj.optString("ai_description", "");
+            String rawSnapUrl = eventObj.optString("snapshot_url", "");
+
+            // Per-camera rate-limiting: at least 25s cooldown between notifications for same camera
+            // unless threat level is elevated (Threat/Suspicious)
+            long now = System.currentTimeMillis();
+            Long lastTime = cameraLastAlertTime.get(camId);
+            boolean isElevatedThreat = "Threat".equalsIgnoreCase(threatLevel) || "Suspicious".equalsIgnoreCase(threatLevel);
+            if (!isElevatedThreat && lastTime != null && (now - lastTime) < 25000) {
+                Log.d(TAG, "Suppressed rapid repeat alert for camera: " + camName);
+                return;
+            }
+            cameraLastAlertTime.put(camId, now);
 
             // Build full snapshot URL if relative
             String fullSnapUrl = rawSnapUrl;
@@ -176,7 +227,7 @@ public class GawkrPushService extends Service {
 
             // Extract labels
             StringBuilder labelsBuilder = new StringBuilder();
-            JSONArray objectsArr = obj.optJSONArray("objects");
+            JSONArray objectsArr = eventObj.optJSONArray("objects");
             if (objectsArr != null && objectsArr.length() > 0) {
                 for (int i = 0; i < objectsArr.length(); i++) {
                     JSONObject det = objectsArr.getJSONObject(i);
@@ -191,8 +242,10 @@ public class GawkrPushService extends Service {
 
             // Spawn background thread to fetch image and show notification
             final String finalSnapUrl = fullSnapUrl;
+            final String finalCamId = camId;
             new Thread(() -> NotificationHelper.showSecurityAlert(
                     GawkrPushService.this,
+                    finalCamId,
                     camName,
                     labels,
                     aiDesc,
