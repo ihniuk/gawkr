@@ -1,11 +1,35 @@
 const API_BASE = '/api';
 
 export const authStorage = {
-  getToken: () => localStorage.getItem('nvr_token') || localStorage.getItem('token'),
+  getToken: () => {
+    // 1. Check native Android bridge
+    if (typeof window !== 'undefined' && window.GawkrBridge && typeof window.GawkrBridge.getAuthToken === 'function') {
+      try {
+        const b = window.GawkrBridge.getAuthToken();
+        if (b) {
+          localStorage.setItem('nvr_token', b);
+          return b;
+        }
+      } catch (e) {}
+    }
+    // 2. Check URL search parameters (?auth_token=...)
+    if (typeof window !== 'undefined' && window.location && window.location.search) {
+      try {
+        const p = new URLSearchParams(window.location.search);
+        const t = p.get('auth_token') || p.get('token');
+        if (t) {
+          localStorage.setItem('nvr_token', t);
+          return t;
+        }
+      } catch (e) {}
+    }
+    return localStorage.getItem('nvr_token') || localStorage.getItem('token');
+  },
   setToken: (token) => {
     if (token) {
       localStorage.setItem('nvr_token', token);
       localStorage.setItem('token', token);
+      localStorage.setItem('gawkr_token', token);
     } else {
       localStorage.removeItem('nvr_token');
       localStorage.removeItem('token');
@@ -18,6 +42,33 @@ export const authStorage = {
     localStorage.removeItem('gawkr_token');
   },
   getUser: () => {
+    // 1. Check native Android bridge
+    if (typeof window !== 'undefined' && window.GawkrBridge && typeof window.GawkrBridge.getAuthToken === 'function') {
+      try {
+        const b = window.GawkrBridge.getAuthToken();
+        if (b) {
+          const u = (window.GawkrBridge.getUsername && window.GawkrBridge.getUsername()) || 'admin';
+          const r = (window.GawkrBridge.getRole && window.GawkrBridge.getRole()) || 'admin';
+          const obj = { username: u, role: r };
+          localStorage.setItem('nvr_user', JSON.stringify(obj));
+          return obj;
+        }
+      } catch (e) {}
+    }
+    // 2. Check URL search parameters
+    if (typeof window !== 'undefined' && window.location && window.location.search) {
+      try {
+        const p = new URLSearchParams(window.location.search);
+        const t = p.get('auth_token') || p.get('token');
+        if (t) {
+          const u = p.get('user') || 'admin';
+          const r = p.get('role') || 'admin';
+          const obj = { username: u, role: r };
+          localStorage.setItem('nvr_user', JSON.stringify(obj));
+          return obj;
+        }
+      } catch (e) {}
+    }
     // Only return a user if a token is actually present!
     const token = localStorage.getItem('nvr_token') || localStorage.getItem('token');
     if (!token) return null;

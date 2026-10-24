@@ -73,6 +73,21 @@ public class MainActivity extends AppCompatActivity {
         username = prefs.getString("username", "admin");
         role = prefs.getString("role", "admin");
 
+        if (getIntent() != null) {
+            if (getIntent().hasExtra("server_url") && getIntent().getStringExtra("server_url") != null) {
+                serverUrl = getIntent().getStringExtra("server_url");
+            }
+            if (getIntent().hasExtra("token") && getIntent().getStringExtra("token") != null) {
+                token = getIntent().getStringExtra("token");
+            }
+            if (getIntent().hasExtra("username") && getIntent().getStringExtra("username") != null) {
+                username = getIntent().getStringExtra("username");
+            }
+            if (getIntent().hasExtra("role") && getIntent().getStringExtra("role") != null) {
+                role = getIntent().getStringExtra("role");
+            }
+        }
+
         webView = findViewById(R.id.webView);
         webProgressBar = findViewById(R.id.webProgressBar);
         tvServerTitle = findViewById(R.id.tvServerTitle);
@@ -152,9 +167,14 @@ public class MainActivity extends AppCompatActivity {
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        settings.setUserAgentString(settings.getUserAgentString() + " GawkrAndroid/1.0");
 
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        CookieManager cookieManager = CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        cookieManager.setAcceptThirdPartyCookies(webView, true);
+        if (token != null && !token.isEmpty()) {
+            cookieManager.setCookie(serverUrl, "nvr_token=" + token + "; Path=/; SameSite=Lax");
+        }
 
         // Native Single Sign-On Javascript bridge
         webView.addJavascriptInterface(new GawkrBridge(), "GawkrBridge");
@@ -201,12 +221,11 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Load the dashboard with URL authentication parameters for instant SSO
-        String targetUrl = serverUrl;
+        // Load the dashboard with trailing slash and URL authentication parameters for instant SSO
+        String baseUrl = serverUrl.endsWith("/") ? serverUrl : (serverUrl + "/");
+        String targetUrl = baseUrl;
         if (token != null && !token.isEmpty()) {
-            String delim = targetUrl.contains("?") ? "&" : "?";
-            targetUrl = targetUrl + delim +
-                    "auth_token=" + android.net.Uri.encode(token) +
+            targetUrl += "?auth_token=" + android.net.Uri.encode(token) +
                     "&user=" + android.net.Uri.encode(username) +
                     "&role=" + android.net.Uri.encode(role);
         }

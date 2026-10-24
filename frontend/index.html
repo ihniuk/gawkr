@@ -11,6 +11,29 @@
     <link rel="manifest" href="/manifest.json" />
     <link rel="apple-touch-icon" href="/favicon.svg" />
     <title>Gawkr — Having a gawk so you don't have to</title>
+    <script>
+      (function() {
+        try {
+          var params = new URLSearchParams(window.location.search);
+          var token = params.get('auth_token') || params.get('token');
+          var user = params.get('user') || 'admin';
+          var role = params.get('role') || 'admin';
+
+          if (!token && window.GawkrBridge && typeof window.GawkrBridge.getAuthToken === 'function') {
+            token = window.GawkrBridge.getAuthToken();
+            if (window.GawkrBridge.getUsername) user = window.GawkrBridge.getUsername();
+            if (window.GawkrBridge.getRole) role = window.GawkrBridge.getRole();
+          }
+
+          if (token) {
+            localStorage.setItem('nvr_token', token);
+            localStorage.setItem('token', token);
+            localStorage.setItem('gawkr_token', token);
+            localStorage.setItem('nvr_user', JSON.stringify({ username: user, role: role }));
+          }
+        } catch(e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

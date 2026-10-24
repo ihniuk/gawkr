@@ -87,7 +87,11 @@ public class LoginActivity extends AppCompatActivity {
 
         // Normalize URL
         if (!rawServer.startsWith("http://") && !rawServer.startsWith("https://")) {
-            rawServer = "https://" + rawServer;
+            if (rawServer.matches("^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+.*") || rawServer.contains(":8000") || rawServer.contains("localhost")) {
+                rawServer = "http://" + rawServer;
+            } else {
+                rawServer = "https://" + rawServer;
+            }
         }
         if (rawServer.endsWith("/")) {
             rawServer = rawServer.substring(0, rawServer.length() - 1);
@@ -123,13 +127,13 @@ public class LoginActivity extends AppCompatActivity {
                             String role = respJson.optString("role", "admin");
                             String respUsername = respJson.optString("username", username);
 
-                            // Save credentials
+                            // Save credentials synchronously
                             prefs.edit()
                                     .putString("server_url", serverUrl)
                                     .putString("username", respUsername)
                                     .putString("role", role)
                                     .putString("token", token)
-                                    .apply();
+                                    .commit();
 
                             // Start background push service
                             Intent serviceIntent = new Intent(LoginActivity.this, GawkrPushService.class);

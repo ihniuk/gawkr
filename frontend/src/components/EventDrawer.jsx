@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bell, X, ShieldAlert, Clock, Video, ExternalLink, Trash2 } from 'lucide-react';
+import { Bell, X, ShieldAlert, Clock, Video, ExternalLink, Trash2, Smartphone } from 'lucide-react';
 
 export default function EventDrawer({ isOpen, onClose, events, onSelectEvent, onClearEvents }) {
   if (!isOpen) return null;
@@ -36,6 +36,27 @@ export default function EventDrawer({ isOpen, onClose, events, onSelectEvent, on
           <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>{events.length}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <a
+            href="/gawkr.apk"
+            download="gawkr.apk"
+            className="btn-glass"
+            title="Download Gawkr Android App (APK)"
+            style={{
+              padding: '6px 10px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              fontSize: '0.78rem',
+              color: 'var(--accent-emerald, #10b981)',
+              borderColor: 'rgba(16, 185, 129, 0.35)',
+              background: 'rgba(16, 185, 129, 0.08)',
+              textDecoration: 'none',
+              cursor: 'pointer'
+            }}
+          >
+            <Smartphone size={13} />
+            <span>APK</span>
+          </a>
           <button
             className="btn-glass"
             onClick={onClearEvents}

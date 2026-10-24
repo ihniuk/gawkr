@@ -17,7 +17,7 @@ import { NvrWebSocket } from './api/ws';
 import { ShieldAlert, CheckCircle, Bell, X, Shield, Lock, Smartphone } from 'lucide-react';
 
 export default function App() {
-  const [user, setUser] = useState(authStorage.getUser() || null);
+  const [user, setUser] = useState(() => authStorage.getUser());
   const [cameras, setCameras] = useState([]);
   const [telemetryMap, setTelemetryMap] = useState({});
   const [events, setEvents] = useState([]);
@@ -407,47 +407,6 @@ export default function App() {
               <Lock size={16} /> {isLoggingIn ? 'Authenticating…' : 'Sign In to Dashboard'}
             </button>
           </form>
-
-          {/* Prominent Android APK Download Card */}
-          <div style={{
-            marginTop: '24px',
-            padding: '16px',
-            borderRadius: '12px',
-            background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 182, 212, 0.08) 100%)',
-            border: '1px solid rgba(16, 185, 129, 0.35)',
-            textAlign: 'center'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', marginBottom: '4px' }}>
-              <Smartphone size={18} color="var(--accent-emerald)" />
-              <span style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--accent-emerald)' }}>
-                Gawkr Mobile for Android
-              </span>
-            </div>
-            <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', margin: '0 0 12px' }}>
-              Native background push alerts with intruder snapshot previews
-            </p>
-            <a
-              href="/api/download/gawkr.apk"
-              download="gawkr.apk"
-              className="btn-primary"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                background: 'var(--accent-emerald)',
-                color: '#fff',
-                textDecoration: 'none',
-                padding: '10px 14px',
-                borderRadius: '8px',
-                fontWeight: 700,
-                fontSize: '0.82rem',
-                width: '100%'
-              }}
-            >
-              <Smartphone size={15} /> Download Android App (APK)
-            </a>
-          </div>
         </div>
       </div>
     );
