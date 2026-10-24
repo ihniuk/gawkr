@@ -64,7 +64,7 @@
                 android:layout_height="48dp"
                 android:layout_marginBottom="18dp"
                 android:background="@color/input_dark"
-                android:hint="https://cams.ihni.uk"
+                android:hint="e.g. 192.168.1.100:8000 or nvr.lan"
                 android:inputType="textUri"
                 android:paddingHorizontal="14dp"
                 android:textColor="@color/text_light"

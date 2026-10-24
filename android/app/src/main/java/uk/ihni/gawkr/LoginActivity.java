@@ -52,14 +52,18 @@ public class LoginActivity extends AppCompatActivity {
         progressBar = findViewById(R.id.progressBar);
         tvError = findViewById(R.id.tvError);
 
-        // Pre-fill existing credentials or default URL
-        String savedServer = prefs.getString("server_url", "https://cams.ihni.uk");
-        String savedUser = prefs.getString("username", "admin");
+        // Pre-fill existing credentials if previously saved
+        String savedServer = prefs.getString("server_url", "");
+        String savedUser = prefs.getString("username", "");
         String savedRole = prefs.getString("role", "admin");
         String savedToken = prefs.getString("token", "");
 
-        etServerUrl.setText(savedServer);
-        etUsername.setText(savedUser);
+        if (!savedServer.isEmpty()) {
+            etServerUrl.setText(savedServer);
+        }
+        if (!savedUser.isEmpty()) {
+            etUsername.setText(savedUser);
+        }
 
         // Check if intent specifies forced re-login
         boolean switchServer = getIntent().getBooleanExtra("switch_server", false);

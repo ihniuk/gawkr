@@ -68,7 +68,7 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         prefs = getSharedPreferences("gawkr_prefs", Context.MODE_PRIVATE);
-        serverUrl = prefs.getString("server_url", "https://cams.ihni.uk");
+        serverUrl = prefs.getString("server_url", "");
         token = prefs.getString("token", "");
         username = prefs.getString("username", "admin");
         role = prefs.getString("role", "admin");
