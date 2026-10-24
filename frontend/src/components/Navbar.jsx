@@ -248,31 +248,6 @@ export default function Navbar({
             </button>
           )}
 
-          {/* Download Android APK Button - High visibility on both mobile & desktop */}
-          <a
-            href="/api/download/gawkr.apk"
-            download="gawkr.apk"
-            className="btn-glass"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: isMobile ? '6px 10px' : '7px 14px',
-              background: 'rgba(16, 185, 129, 0.18)',
-              border: '1px solid rgba(16, 185, 129, 0.45)',
-              color: 'var(--accent-emerald)',
-              textDecoration: 'none',
-              fontSize: isMobile ? '0.74rem' : '0.80rem',
-              fontWeight: 700,
-              borderRadius: '8px',
-              whiteSpace: 'nowrap'
-            }}
-            title="Download Gawkr Android App (Native Push Notifications)"
-          >
-            <Smartphone size={15} color="var(--accent-emerald)" />
-            <span>{isMobile ? 'Get APK' : 'Android App'}</span>
-          </a>
-
           {/* User Role */}
           {user ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>

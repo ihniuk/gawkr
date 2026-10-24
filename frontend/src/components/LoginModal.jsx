@@ -241,36 +241,6 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
                 </button>
               </div>
             </div>
-
-            {/* Download Android App */}
-            <div style={{
-              borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-              marginTop: '14px',
-              paddingTop: '12px',
-              textAlign: 'center'
-            }}>
-              <a
-                href="/api/download/gawkr.apk"
-                download="gawkr.apk"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                  background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(6, 182, 212, 0.15) 100%)',
-                  border: '1px solid rgba(16, 185, 129, 0.4)',
-                  padding: '9px 12px',
-                  borderRadius: '9px',
-                  color: 'var(--accent-emerald)',
-                  textDecoration: 'none',
-                  fontSize: '0.80rem',
-                  fontWeight: 600
-                }}
-              >
-                <Smartphone size={16} color="var(--accent-emerald)" />
-                <span>Download Android APK (Native Push)</span>
-              </a>
-            </div>
           </>
         ) : (
           <form onSubmit={handleChangePassword}>
