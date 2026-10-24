@@ -1,0 +1,179 @@
+package uk.ihni.gawkr;
+
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import androidx.appcompat.app.AppCompatActivity;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import org.json.JSONObject;
+import java.util.concurrent.TimeUnit;
+
+public class LoginActivity extends AppCompatActivity {
+    private EditText etServerUrl;
+    private EditText etUsername;
+    private EditText etPassword;
+    private Button btnConnect;
+    private ProgressBar progressBar;
+    private TextView tvError;
+
+    private SharedPreferences prefs;
+    private OkHttpClient client;
+    private Handler mainHandler;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_login);
+
+        prefs = getSharedPreferences("gawkr_prefs", Context.MODE_PRIVATE);
+        mainHandler = new Handler(Looper.getMainLooper());
+        client = new OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build();
+
+        etServerUrl = findViewById(R.id.etServerUrl);
+        etUsername = findViewById(R.id.etUsername);
+        etPassword = findViewById(R.id.etPassword);
+        btnConnect = findViewById(R.id.btnConnect);
+        progressBar = findViewById(R.id.progressBar);
+        tvError = findViewById(R.id.tvError);
+
+        // Pre-fill existing credentials or default URL
+        String savedServer = prefs.getString("server_url", "https://cams.ihni.uk");
+        String savedUser = prefs.getString("username", "admin");
+        String savedToken = prefs.getString("token", "");
+
+        etServerUrl.setText(savedServer);
+        etUsername.setText(savedUser);
+
+        // Check if intent specifies forced re-login
+        boolean switchServer = getIntent().getBooleanExtra("switch_server", false);
+        if (!switchServer && !savedToken.isEmpty() && !savedServer.isEmpty()) {
+            launchMainActivity(savedServer, savedToken);
+            return;
+        }
+
+        btnConnect.setOnClickListener(v -> performLogin());
+    }
+
+    private void performLogin() {
+        String rawServer = etServerUrl.getText().toString().trim();
+        String username = etUsername.getText().toString().trim();
+        String password = etPassword.getText().toString();
+
+        if (rawServer.isEmpty()) {
+            showError("Please enter the server address");
+            return;
+        }
+        if (username.isEmpty() || password.isEmpty()) {
+            showError("Please enter both username and password");
+            return;
+        }
+
+        // Normalize URL
+        if (!rawServer.startsWith("http://") && !rawServer.startsWith("https://")) {
+            rawServer = "https://" + rawServer;
+        }
+        if (rawServer.endsWith("/")) {
+            rawServer = rawServer.substring(0, rawServer.length() - 1);
+        }
+        final String serverUrl = rawServer;
+
+        setLoading(true);
+
+        new Thread(() -> {
+            try {
+                JSONObject jsonBody = new JSONObject();
+                jsonBody.put("username", username);
+                jsonBody.put("password", password);
+
+                RequestBody body = RequestBody.create(
+                        jsonBody.toString(),
+                        MediaType.parse("application/json; charset=utf-8")
+                );
+
+                Request request = new Request.Builder()
+                        .url(serverUrl + "/api/auth/login")
+                        .post(body)
+                        .build();
+
+                try (Response response = client.newCall(request).execute()) {
+                    String respStr = response.body() != null ? response.body().string() : "";
+                    
+                    if (response.isSuccessful() && !respStr.isEmpty()) {
+                        JSONObject respJson = new JSONObject(respStr);
+                        String token = respJson.optString("token", "");
+                        
+                        if (!token.isEmpty()) {
+                            // Save credentials
+                            prefs.edit()
+                                    .putString("server_url", serverUrl)
+                                    .putString("username", username)
+                                    .putString("token", token)
+                                    .apply();
+
+                            // Start background push service
+                            Intent serviceIntent = new Intent(LoginActivity.this, GawkrPushService.class);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                startForegroundService(serviceIntent);
+                            } else {
+                                startService(serviceIntent);
+                            }
+
+                            mainHandler.post(() -> launchMainActivity(serverUrl, token));
+                            return;
+                        }
+                    }
+
+                    mainHandler.post(() -> {
+                        setLoading(false);
+                        if (response.code() == 401) {
+                            showError("Invalid username or password.");
+                        } else {
+                            showError("Server returned code " + response.code() + ": Check address.");
+                        }
+                    });
+                }
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    setLoading(false);
+                    showError("Connection failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void launchMainActivity(String serverUrl, String token) {
+        Intent intent = new Intent(this, MainActivity.class);
+        intent.putExtra("server_url", serverUrl);
+        intent.putExtra("token", token);
+        startActivity(intent);
+        finish();
+    }
+
+    private void setLoading(boolean loading) {
+        progressBar.setVisibility(loading ? View.VISIBLE : View.GONE);
+        btnConnect.setEnabled(!loading);
+        btnConnect.setAlpha(loading ? 0.6f : 1.0f);
+        tvError.setVisibility(View.GONE);
+    }
+
+    private void showError(String msg) {
+        tvError.setText(msg);
+        tvError.setVisibility(View.VISIBLE);
+    }
+}

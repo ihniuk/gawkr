@@ -1,0 +1,14 @@
+<resources>
+    <string name="app_name">Gawkr</string>
+    <string name="server_address">Server Address</string>
+    <string name="server_hint">e.g. https://cams.ihni.uk</string>
+    <string name="username">Username</string>
+    <string name="password">Password</string>
+    <string name="connect_btn">Connect to Gawkr</string>
+    <string name="logging_in">Connecting to Gawkr NVR…</string>
+    <string name="invalid_credentials">Unable to connect. Check server address and credentials.</string>
+    <string name="notification_channel_name">Security Alerts</string>
+    <string name="notification_channel_desc">Real-time alerts for motion, persons, and vehicles</string>
+    <string name="service_notification_title">Gawkr Alert Monitor</string>
+    <string name="service_notification_desc">Connected and monitoring real-time security events</string>
+</resources>

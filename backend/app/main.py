@@ -467,6 +467,29 @@ async def websocket_events_endpoint(websocket: WebSocket):
     except Exception:
         notification_manager.disconnect(websocket)
 
+# ----------------- ANDROID APK DOWNLOAD -----------------
+
+@app.get("/api/download/gawkr.apk")
+@app.head("/api/download/gawkr.apk")
+@app.get("/gawkr.apk")
+@app.head("/gawkr.apk")
+async def download_gawkr_apk():
+    """Serves the compiled Gawkr Android APK with native background push notifications."""
+    for p in [
+        Path(__file__).resolve().parent.parent / "downloads" / "gawkr.apk",
+        Path("/app/downloads/gawkr.apk"),
+        Path("/app/frontend/dist/gawkr.apk"),
+        Path(__file__).resolve().parent.parent.parent / "frontend" / "dist" / "gawkr.apk",
+        Path(__file__).resolve().parent.parent.parent / "android" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
+    ]:
+        if p.exists() and p.is_file():
+            return FileResponse(
+                str(p),
+                media_type="application/vnd.android.package-archive",
+                filename="gawkr.apk"
+            )
+    raise HTTPException(status_code=404, detail="Gawkr APK not found. Please build the Android package.")
+
 # ----------------- FRONTEND STATIC SERVING (IF BUILT) -----------------
 for candidate in [
     Path(__file__).resolve().parent.parent.parent / "frontend" / "dist",

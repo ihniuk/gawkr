@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Shield, Radio, Bell, LayoutGrid, Grid, Square, 
-  User, LogOut, Lock, Video, Sparkles, Film, Sliders
+  User, LogOut, Lock, Video, Sparkles, Film, Sliders, Smartphone
 } from 'lucide-react';
 
 export default function Navbar({
@@ -245,6 +245,30 @@ export default function Navbar({
               </span>
             )}
           </button>
+
+          {/* Download Android APK Button */}
+          <a
+            href="/api/download/gawkr.apk"
+            download="gawkr.apk"
+            className="btn-glass"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: isMobile ? '6px 8px' : '7px 12px',
+              background: 'rgba(16, 185, 129, 0.12)',
+              border: '1px solid rgba(16, 185, 129, 0.35)',
+              color: 'var(--accent-emerald)',
+              textDecoration: 'none',
+              fontSize: '0.80rem',
+              fontWeight: 600,
+              borderRadius: '8px'
+            }}
+            title="Download Gawkr Android App (Native Push Notifications)"
+          >
+            <Smartphone size={15} color="var(--accent-emerald)" />
+            {!isMobile && <span>Android App</span>}
+          </a>
 
           {/* User Role */}
           {user ? (
