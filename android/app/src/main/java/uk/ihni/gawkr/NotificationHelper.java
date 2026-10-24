@@ -55,6 +55,27 @@ public class NotificationHelper {
         }
     }
 
+    public static String cleanAiDescription(String raw) {
+        if (raw == null) return "";
+        String s = raw.trim();
+        if (s.isEmpty() || "null".equalsIgnoreCase(s)) return "";
+
+        // Remove bracketed verdicts like [Safe], [Threat], [Suspicious]
+        s = s.replaceAll("(?i)\\[(safe|suspicious|threat|low|medium|high|critical)\\]", "");
+        // Remove trailing threat assessment lines like "Threat Assessment: Safe." or "Verdict: Safe."
+        s = s.replaceAll("(?i)(threat assessment|assessment|verdict|threat level|safety threat)\\s*[:\\-]?\\s*(safe|suspicious|threat|low|medium|high|critical)\\.?", "");
+        // Remove markdown bolding
+        s = s.replace("**", "").replace("*", "");
+        s = s.trim();
+
+        // Remove trailing periods, commas, colons
+        while (s.endsWith(".") || s.endsWith(",") || s.endsWith(":") || s.endsWith(";")) {
+            s = s.substring(0, s.length() - 1).trim();
+        }
+
+        return s;
+    }
+
     public static void showSecurityAlert(Context context, String camName, String objects, String aiDesc, String snapshotUrl, String threatLevel) {
         showSecurityAlert(context, camName, camName, objects, aiDesc, snapshotUrl, threatLevel);
     }
@@ -71,32 +92,44 @@ public class NotificationHelper {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        int color = 0xFF10B981; // Safe (Emerald)
-        long[] vibration = new long[]{0, 150};
-        int priority = NotificationCompat.PRIORITY_DEFAULT;
-        String threatBadge = "🟢 Motion Detected";
+        boolean isHighOrCritical = "Threat".equalsIgnoreCase(threatLevel)
+                || "High".equalsIgnoreCase(threatLevel)
+                || "Critical".equalsIgnoreCase(threatLevel);
 
-        if ("Threat".equalsIgnoreCase(threatLevel)) {
-            color = 0xFFEF4444; // Threat (Red)
-            vibration = new long[]{0, 400, 150, 400, 150, 600};
-            threatBadge = "🔴 THREAT DETECTED";
-            priority = NotificationCompat.PRIORITY_HIGH;
-        } else if ("Suspicious".equalsIgnoreCase(threatLevel)) {
-            color = 0xFFF59E0B; // Suspicious (Amber)
-            vibration = new long[]{0, 250, 150, 250};
-            threatBadge = "🟡 SUSPICIOUS ACTIVITY";
-            priority = NotificationCompat.PRIORITY_HIGH;
+        // Format short AI description or fallback to detected objects
+        String cleanDesc = cleanAiDescription(aiDesc);
+        if (cleanDesc.isEmpty()) {
+            cleanDesc = (objects != null && !objects.isEmpty() && !"null".equalsIgnoreCase(objects))
+                    ? objects
+                    : "Activity";
         }
 
-        String prefix = "Threat".equalsIgnoreCase(threatLevel) ? "🚨 " : ("Suspicious".equalsIgnoreCase(threatLevel) ? "⚠️ " : "GAWKR • ");
-        String title = prefix + camName.toUpperCase() + " • " + threatBadge;
-        String content = (aiDesc != null && !aiDesc.isEmpty()) ? aiDesc : "Detected: " + objects;
+        // "{ short AI description} at {camera name}"
+        String mainText = cleanDesc + " at " + camName;
+
+        String title;
+        int color;
+        long[] vibration;
+        int priority;
+
+        if (isHighOrCritical) {
+            title = "🚨 HIGH THREAT • " + mainText;
+            color = 0xFFEF4444; // Threat (Red)
+            vibration = new long[]{0, 400, 150, 400, 150, 600};
+            priority = NotificationCompat.PRIORITY_HIGH;
+        } else {
+            // If threat alert is anything other than High/critical, don't include the threat level
+            title = mainText;
+            color = 0xFF10B981; // Safe (Emerald)
+            vibration = new long[]{0, 150};
+            priority = NotificationCompat.PRIORITY_DEFAULT;
+        }
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, ALERTS_CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_gawkr)
                 .setContentTitle(title)
-                .setContentText(content)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(content))
+                .setContentText(mainText)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(mainText))
                 .setColor(color)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
@@ -118,7 +151,8 @@ public class NotificationHelper {
                     builder.setLargeIcon(bitmap);
                     builder.setStyle(new NotificationCompat.BigPictureStyle()
                             .bigPicture(bitmap)
-                            .setSummaryText(content));
+                            .setBigContentTitle(title)
+                            .setSummaryText(mainText));
                 }
             } catch (Exception ignored) {
             }
@@ -127,7 +161,6 @@ public class NotificationHelper {
         try {
             NotificationManagerCompat managerCompat = NotificationManagerCompat.from(context);
             // Stable notification ID per camera so consecutive events update the existing card
-            // rather than filling the entire Android status bar with duplicate rows
             int notificationId = Math.abs((camId != null ? camId : camName).toLowerCase().hashCode());
             managerCompat.notify(notificationId, builder.build());
         } catch (SecurityException ignored) {

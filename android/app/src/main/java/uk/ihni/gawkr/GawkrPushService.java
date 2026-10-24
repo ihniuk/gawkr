@@ -21,6 +21,7 @@ import org.json.JSONObject;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 public class GawkrPushService extends Service {
@@ -44,6 +45,10 @@ public class GawkrPushService extends Service {
 
     // Per-camera alert cooldown (minimum 25s between repeat pushes for same camera)
     private final Map<String, Long> cameraLastAlertTime = new ConcurrentHashMap<>();
+
+    // Short latch for events waiting for AI Vision enrichment from server (up to 2.2s)
+    private final ConcurrentHashMap<String, CountDownLatch> pendingAiLatches = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, JSONObject> latestEventPayloads = new ConcurrentHashMap<>();
 
     @Override
     public void onCreate() {
@@ -169,6 +174,12 @@ public class GawkrPushService extends Service {
         sendBroadcast(intent);
     }
 
+    private String getCleanAiDescription(JSONObject eventObj) {
+        if (eventObj.isNull("ai_description")) return "";
+        String raw = eventObj.optString("ai_description", "").trim();
+        return NotificationHelper.cleanAiDescription(raw);
+    }
+
     private void handleEventMessage(String jsonStr) {
         try {
             JSONObject root = new JSONObject(jsonStr);
@@ -189,7 +200,58 @@ public class GawkrPushService extends Service {
                 return;
             }
 
-            // Deduplicate: If we already alerted for this event ID, ignore repeated updates
+            // If we already fully dispatched a notification for this event ID, ignore
+            synchronized (notifiedEvents) {
+                if (notifiedEvents.containsKey(eventId)) {
+                    return;
+                }
+            }
+
+            String aiDesc = getCleanAiDescription(eventObj);
+
+            if (aiDesc.isEmpty()) {
+                // Initial detection without AI Vision yet: wait up to 2.2 seconds for
+                // server's AI Vision enhancement to arrive
+                latestEventPayloads.put(eventId, eventObj);
+                CountDownLatch existingLatch = pendingAiLatches.get(eventId);
+                if (existingLatch == null) {
+                    CountDownLatch latch = new CountDownLatch(1);
+                    pendingAiLatches.put(eventId, latch);
+
+                    new Thread(() -> {
+                        try {
+                            latch.await(2200, TimeUnit.MILLISECONDS);
+                        } catch (InterruptedException ignored) {}
+                        pendingAiLatches.remove(eventId);
+                        JSONObject latestObj = latestEventPayloads.remove(eventId);
+                        if (latestObj != null) {
+                            processAndDispatchAlert(latestObj);
+                        }
+                    }).start();
+                }
+            } else {
+                // AI description is present!
+                latestEventPayloads.put(eventId, eventObj);
+                CountDownLatch latch = pendingAiLatches.remove(eventId);
+                if (latch != null) {
+                    // Unblock waiter so it immediately dispatches with the AI description
+                    latch.countDown();
+                } else {
+                    processAndDispatchAlert(eventObj);
+                }
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to parse security event JSON", e);
+        }
+    }
+
+    private void processAndDispatchAlert(JSONObject eventObj) {
+        try {
+            String eventId = eventObj.optString("id", "");
+            if (eventId.isEmpty()) return;
+
+            // Deduplicate: mark event as notified so we never alert twice for the same event
             synchronized (notifiedEvents) {
                 if (notifiedEvents.containsKey(eventId)) {
                     return;
@@ -200,14 +262,18 @@ public class GawkrPushService extends Service {
             String camId = eventObj.optString("camera_id", "default");
             String camName = eventObj.optString("camera_name", "Surveillance");
             String threatLevel = eventObj.optString("threat_level", "Safe");
-            String aiDesc = eventObj.optString("ai_description", "");
+            String aiDesc = getCleanAiDescription(eventObj);
             String rawSnapUrl = eventObj.optString("snapshot_url", "");
 
             // Per-camera rate-limiting: at least 25s cooldown between notifications for same camera
-            // unless threat level is elevated (Threat/Suspicious)
+            // unless threat level is elevated (Threat/Suspicious/High/Critical)
             long now = System.currentTimeMillis();
             Long lastTime = cameraLastAlertTime.get(camId);
-            boolean isElevatedThreat = "Threat".equalsIgnoreCase(threatLevel) || "Suspicious".equalsIgnoreCase(threatLevel);
+            boolean isElevatedThreat = "Threat".equalsIgnoreCase(threatLevel)
+                    || "High".equalsIgnoreCase(threatLevel)
+                    || "Critical".equalsIgnoreCase(threatLevel)
+                    || "Suspicious".equalsIgnoreCase(threatLevel);
+
             if (!isElevatedThreat && lastTime != null && (now - lastTime) < 25000) {
                 Log.d(TAG, "Suppressed rapid repeat alert for camera: " + camName);
                 return;
@@ -225,7 +291,7 @@ public class GawkrPushService extends Service {
                 fullSnapUrl = serverUrl + rawSnapUrl;
             }
 
-            // Extract labels
+            // Extract labels for fallback
             StringBuilder labelsBuilder = new StringBuilder();
             JSONArray objectsArr = eventObj.optJSONArray("objects");
             if (objectsArr != null && objectsArr.length() > 0) {
@@ -238,23 +304,23 @@ public class GawkrPushService extends Service {
                     }
                 }
             }
-            String labels = labelsBuilder.length() > 0 ? labelsBuilder.toString() : "Motion Detected";
+            String labels = labelsBuilder.length() > 0 ? labelsBuilder.toString() : "Activity";
 
-            // Spawn background thread to fetch image and show notification
             final String finalSnapUrl = fullSnapUrl;
             final String finalCamId = camId;
+            final String finalAiDesc = aiDesc;
             new Thread(() -> NotificationHelper.showSecurityAlert(
                     GawkrPushService.this,
                     finalCamId,
                     camName,
                     labels,
-                    aiDesc,
+                    finalAiDesc,
                     finalSnapUrl,
                     threatLevel
             )).start();
 
         } catch (Exception e) {
-            Log.e(TAG, "Failed to parse security event JSON", e);
+            Log.e(TAG, "Error dispatching alert", e);
         }
     }
 
