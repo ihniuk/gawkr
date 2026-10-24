@@ -55,6 +55,7 @@ public class LoginActivity extends AppCompatActivity {
         // Pre-fill existing credentials or default URL
         String savedServer = prefs.getString("server_url", "https://cams.ihni.uk");
         String savedUser = prefs.getString("username", "admin");
+        String savedRole = prefs.getString("role", "admin");
         String savedToken = prefs.getString("token", "");
 
         etServerUrl.setText(savedServer);
@@ -63,7 +64,7 @@ public class LoginActivity extends AppCompatActivity {
         // Check if intent specifies forced re-login
         boolean switchServer = getIntent().getBooleanExtra("switch_server", false);
         if (!switchServer && !savedToken.isEmpty() && !savedServer.isEmpty()) {
-            launchMainActivity(savedServer, savedToken);
+            launchMainActivity(savedServer, savedToken, savedUser, savedRole);
             return;
         }
 
@@ -119,10 +120,14 @@ public class LoginActivity extends AppCompatActivity {
                         String token = respJson.optString("token", "");
                         
                         if (!token.isEmpty()) {
+                            String role = respJson.optString("role", "admin");
+                            String respUsername = respJson.optString("username", username);
+
                             // Save credentials
                             prefs.edit()
                                     .putString("server_url", serverUrl)
-                                    .putString("username", username)
+                                    .putString("username", respUsername)
+                                    .putString("role", role)
                                     .putString("token", token)
                                     .apply();
 
@@ -134,7 +139,7 @@ public class LoginActivity extends AppCompatActivity {
                                 startService(serviceIntent);
                             }
 
-                            mainHandler.post(() -> launchMainActivity(serverUrl, token));
+                            mainHandler.post(() -> launchMainActivity(serverUrl, token, respUsername, role));
                             return;
                         }
                     }
@@ -157,10 +162,12 @@ public class LoginActivity extends AppCompatActivity {
         }).start();
     }
 
-    private void launchMainActivity(String serverUrl, String token) {
+    private void launchMainActivity(String serverUrl, String token, String username, String role) {
         Intent intent = new Intent(this, MainActivity.class);
         intent.putExtra("server_url", serverUrl);
         intent.putExtra("token", token);
+        intent.putExtra("username", username);
+        intent.putExtra("role", role);
         startActivity(intent);
         finish();
     }

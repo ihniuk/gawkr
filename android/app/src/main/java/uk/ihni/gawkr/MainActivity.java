@@ -37,6 +37,8 @@ public class MainActivity extends AppCompatActivity {
 
     private String serverUrl;
     private String token;
+    private String username;
+    private String role;
     private SharedPreferences prefs;
 
     private final BroadcastReceiver pushReceiver = new BroadcastReceiver() {
@@ -49,6 +51,17 @@ public class MainActivity extends AppCompatActivity {
         }
     };
 
+    public class GawkrBridge {
+        @android.webkit.JavascriptInterface
+        public String getAuthToken() { return token; }
+        @android.webkit.JavascriptInterface
+        public String getUsername() { return username; }
+        @android.webkit.JavascriptInterface
+        public String getRole() { return role; }
+        @android.webkit.JavascriptInterface
+        public boolean isAndroidApp() { return true; }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -57,6 +70,8 @@ public class MainActivity extends AppCompatActivity {
         prefs = getSharedPreferences("gawkr_prefs", Context.MODE_PRIVATE);
         serverUrl = prefs.getString("server_url", "https://cams.ihni.uk");
         token = prefs.getString("token", "");
+        username = prefs.getString("username", "admin");
+        role = prefs.getString("role", "admin");
 
         webView = findViewById(R.id.webView);
         webProgressBar = findViewById(R.id.webProgressBar);
@@ -141,6 +156,9 @@ public class MainActivity extends AppCompatActivity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
+        // Native Single Sign-On Javascript bridge
+        webView.addJavascriptInterface(new GawkrBridge(), "GawkrBridge");
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
@@ -153,12 +171,11 @@ public class MainActivity extends AppCompatActivity {
         });
 
         webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public void onPageStarted(WebView view, String url, Bitmap favicon) {
-                super.onPageStarted(view, url, favicon);
-                // Pre-inject authentication token into localStorage
+            private void injectAuth(WebView view) {
                 if (token != null && !token.isEmpty()) {
                     String js = "try { " +
+                            "localStorage.setItem('nvr_token', '" + token + "'); " +
+                            "localStorage.setItem('nvr_user', JSON.stringify({username: '" + username + "', role: '" + role + "'})); " +
                             "localStorage.setItem('token', '" + token + "'); " +
                             "localStorage.setItem('gawkr_token', '" + token + "'); " +
                             "} catch(e) {}";
@@ -167,13 +184,33 @@ public class MainActivity extends AppCompatActivity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                injectAuth(view);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                injectAuth(view);
+            }
+
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return false;
             }
         });
 
-        // Load the dashboard
-        webView.loadUrl(serverUrl);
+        // Load the dashboard with URL authentication parameters for instant SSO
+        String targetUrl = serverUrl;
+        if (token != null && !token.isEmpty()) {
+            String delim = targetUrl.contains("?") ? "&" : "?";
+            targetUrl = targetUrl + delim +
+                    "auth_token=" + android.net.Uri.encode(token) +
+                    "&user=" + android.net.Uri.encode(username) +
+                    "&role=" + android.net.Uri.encode(role);
+        }
+        webView.loadUrl(targetUrl);
     }
 
     @Override

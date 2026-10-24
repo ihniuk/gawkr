@@ -83,8 +83,8 @@ export default function Navbar({
           </div>
         </div>
 
-        {/* Desktop Tabs (Hidden on mobile) */}
-        {!isMobile && (
+        {/* Desktop Tabs (Visible ONLY when logged in and not on mobile) */}
+        {!isMobile && user && (
           <div style={{
             display: 'flex',
             background: 'rgba(8, 12, 22, 0.65)',
@@ -158,15 +158,15 @@ export default function Navbar({
 
         {/* Right Actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {isAdmin && currentTab === 'live' && (
+          {user && isAdmin && currentTab === 'live' && (
             <button className="btn-primary" onClick={onOpenDiscovery} style={{ padding: isMobile ? '6px 10px' : '8px 14px', fontSize: isMobile ? '0.75rem' : '0.85rem' }}>
               <Radio size={14} />
               <span>{isMobile ? 'Scan' : 'Discover Cameras'}</span>
             </button>
           )}
 
-          {/* Layout Switcher (Desktop only) */}
-          {!isMobile && currentTab === 'live' && (
+          {/* Layout Switcher (Visible only when logged in) */}
+          {user && !isMobile && currentTab === 'live' && (
             <div style={{
               display: 'flex',
               background: 'rgba(0,0,0,0.3)',
@@ -216,37 +216,39 @@ export default function Navbar({
             </div>
           )}
 
-          {/* Events Bell */}
-          <button
-            className="btn-glass"
-            onClick={onOpenEvents}
-            style={{ position: 'relative', padding: isMobile ? '6px 8px' : '7px 12px' }}
-            title="Open Alerts Feed"
-          >
-            <Bell size={15} color={alertCount > 0 ? "var(--accent-cyan)" : "var(--text-main)"} />
-            {!isMobile && <span>Alerts</span>}
-            {alertCount > 0 && (
-              <span style={{
-                position: 'absolute',
-                top: '-4px',
-                right: '-4px',
-                background: 'var(--accent-rose)',
-                color: '#fff',
-                fontSize: '0.62rem',
-                fontWeight: 700,
-                borderRadius: '50%',
-                width: '16px',
-                height: '16px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center'
-              }}>
-                {alertCount}
-              </span>
-            )}
-          </button>
+          {/* Events Bell (Visible only when logged in) */}
+          {user && (
+            <button
+              className="btn-glass"
+              onClick={onOpenEvents}
+              style={{ position: 'relative', padding: isMobile ? '6px 8px' : '7px 12px' }}
+              title="Open Alerts Feed"
+            >
+              <Bell size={15} color={alertCount > 0 ? "var(--accent-cyan)" : "var(--text-main)"} />
+              {!isMobile && <span>Alerts</span>}
+              {alertCount > 0 && (
+                <span style={{
+                  position: 'absolute',
+                  top: '-4px',
+                  right: '-4px',
+                  background: 'var(--accent-rose)',
+                  color: '#fff',
+                  fontSize: '0.62rem',
+                  fontWeight: 700,
+                  borderRadius: '50%',
+                  width: '16px',
+                  height: '16px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  {alertCount}
+                </span>
+              )}
+            </button>
+          )}
 
-          {/* Download Android APK Button */}
+          {/* Download Android APK Button - High visibility on both mobile & desktop */}
           <a
             href="/api/download/gawkr.apk"
             download="gawkr.apk"
@@ -255,19 +257,20 @@ export default function Navbar({
               display: 'flex',
               alignItems: 'center',
               gap: '6px',
-              padding: isMobile ? '6px 8px' : '7px 12px',
-              background: 'rgba(16, 185, 129, 0.12)',
-              border: '1px solid rgba(16, 185, 129, 0.35)',
+              padding: isMobile ? '6px 10px' : '7px 14px',
+              background: 'rgba(16, 185, 129, 0.18)',
+              border: '1px solid rgba(16, 185, 129, 0.45)',
               color: 'var(--accent-emerald)',
               textDecoration: 'none',
-              fontSize: '0.80rem',
-              fontWeight: 600,
-              borderRadius: '8px'
+              fontSize: isMobile ? '0.74rem' : '0.80rem',
+              fontWeight: 700,
+              borderRadius: '8px',
+              whiteSpace: 'nowrap'
             }}
             title="Download Gawkr Android App (Native Push Notifications)"
           >
             <Smartphone size={15} color="var(--accent-emerald)" />
-            {!isMobile && <span>Android App</span>}
+            <span>{isMobile ? 'Get APK' : 'Android App'}</span>
           </a>
 
           {/* User Role */}
@@ -312,8 +315,8 @@ export default function Navbar({
         </div>
       </nav>
 
-      {/* Mobile Bottom Navigation Bar (Visible only on screens <= 768px) */}
-      {isMobile && (
+      {/* Mobile Bottom Navigation Bar (Visible only when logged in on screens <= 768px) */}
+      {isMobile && user && (
         <div style={{
           position: 'fixed',
           bottom: 0,

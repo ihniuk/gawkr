@@ -14,10 +14,10 @@ import ControlPanel from './components/ControlPanel';
 import DailyBriefingPage from './components/DailyBriefingPage';
 import { api, authStorage } from './api/client';
 import { NvrWebSocket } from './api/ws';
-import { ShieldAlert, CheckCircle, Bell, X } from 'lucide-react';
+import { ShieldAlert, CheckCircle, Bell, X, Shield, Lock, Smartphone } from 'lucide-react';
 
 export default function App() {
-  const [user, setUser] = useState(authStorage.getUser() || { username: 'admin', role: 'admin' });
+  const [user, setUser] = useState(authStorage.getUser() || null);
   const [cameras, setCameras] = useState([]);
   const [telemetryMap, setTelemetryMap] = useState({});
   const [events, setEvents] = useState([]);
@@ -49,10 +49,9 @@ export default function App() {
   // Initial load
   const loadInitialData = async () => {
     try {
-      // Auto-authenticate as admin if no valid token
       if (!authStorage.getToken()) {
-        const auth = await api.login('admin', 'admin123');
-        setUser({ username: auth.username, role: auth.role });
+        setUser(null);
+        return;
       }
 
       const camList = await api.getCameras();
@@ -64,11 +63,50 @@ export default function App() {
       setDrawerAlerts(recentEvents.filter(e => (e.timestamp * 1000) > clearedAt));
     } catch (err) {
       console.error("Initial load error:", err);
+      if (err.message === 'Unauthorized') {
+        setUser(null);
+      }
     }
   };
 
   useEffect(() => {
+    // 1. Check for single sign-on parameters from Android APK URL or Native Bridge
+    const params = new URLSearchParams(window.location.search);
+    const urlToken = params.get('auth_token') || params.get('token');
+    const urlUser = params.get('user');
+    const urlRole = params.get('role');
+
+    if (urlToken) {
+      authStorage.setToken(urlToken);
+      const userData = { username: urlUser || 'admin', role: urlRole || 'admin' };
+      authStorage.setUser(userData);
+      setUser(userData);
+      // Clean query params from URL without page reload
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (window.GawkrBridge && typeof window.GawkrBridge.getAuthToken === 'function') {
+      try {
+        const bToken = window.GawkrBridge.getAuthToken();
+        const bUser = window.GawkrBridge.getUsername();
+        const bRole = window.GawkrBridge.getRole();
+        if (bToken) {
+          authStorage.setToken(bToken);
+          const userData = { username: bUser || 'admin', role: bRole || 'admin' };
+          authStorage.setUser(userData);
+          setUser(userData);
+        }
+      } catch (e) {
+        console.warn("GawkrBridge lookup:", e);
+      }
+    }
+
     loadInitialData();
+
+    // Listen for auth expiration
+    const handleAuthExpired = () => {
+      setUser(null);
+      setIsLoginOpen(true);
+    };
+    window.addEventListener('auth_expired', handleAuthExpired);
 
     // Setup WebSocket for Real-Time AI Alerts and Live Telemetry
     const wsClient = new NvrWebSocket((msg) => {
@@ -248,35 +286,109 @@ export default function App() {
 
       {/* Main Content Area: Live Surveillance Matrix vs Clip Review & Timeline vs Control Panel */}
       <main style={{ flex: 1, display: 'flex' }}>
-        {currentTab === 'live' && (
-          <CameraGrid
-            cameras={cameras}
-            telemetryMap={telemetryMap}
-            layout={layout}
-            isAdmin={isAdmin}
-            onContextMenu={handleOpenContextMenu}
-            onTakeSnapshot={handleTakeSnapshot}
-            onOpenTelemetry={(cam) => setActiveTelemetryCamera(cam)}
-            onOpenZones={(cam) => setActiveZoneModalCamera(cam)}
-            onOpenAiSettings={(cam) => setActiveSettingsCamera(cam)}
-            onOpenDiscovery={() => setIsDiscoveryOpen(true)}
-          />
-        )}
-        {currentTab === 'clips' && (
-          <ClipReviewPage
-            events={events}
-            cameras={cameras}
-            isAdmin={isAdmin}
-            onPlayEvent={(evt) => setActivePlaybackEvent(evt)}
-            onDeleteEvent={handleDeleteEvent}
-            onRefreshEvents={loadInitialData}
-          />
-        )}
-        {currentTab === 'control_panel' && (
-          <ControlPanel isAdmin={isAdmin} currentUser={user} />
-        )}
-        {currentTab === 'briefing' && (
-          <DailyBriefingPage isAdmin={isAdmin} />
+        {!user ? (
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' }}>
+            <div className="glass-panel" style={{ maxWidth: '440px', width: '100%', padding: '36px 28px', textAlign: 'center' }}>
+              <div style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '16px',
+                background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%)',
+                border: '1px solid rgba(6, 182, 212, 0.4)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 16px'
+              }}>
+                <Shield size={32} color="var(--accent-cyan)" />
+              </div>
+              <h2 style={{ fontSize: '1.45rem', fontWeight: 800, margin: '0 0 6px', letterSpacing: '-0.02em' }}>
+                GAWK<span style={{ color: 'var(--accent-cyan)' }}>R</span> Surveillance
+              </h2>
+              <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: '0 0 24px' }}>
+                Sign in to view live camera feeds and security matrix.
+              </p>
+
+              <button
+                className="btn-primary"
+                style={{ width: '100%', padding: '12px', fontSize: '0.94rem', justifyContent: 'center', marginBottom: '24px' }}
+                onClick={() => setIsLoginOpen(true)}
+              >
+                <Lock size={16} /> Sign In to Access Cameras
+              </button>
+
+              {/* Mobile-friendly Android App Card */}
+              <div style={{
+                padding: '18px 16px',
+                borderRadius: '12px',
+                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 182, 212, 0.08) 100%)',
+                border: '1px solid rgba(16, 185, 129, 0.35)',
+                textAlign: 'center'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '6px' }}>
+                  <Smartphone size={20} color="var(--accent-emerald)" />
+                  <span style={{ fontWeight: 700, fontSize: '0.90rem', color: 'var(--accent-emerald)' }}>Gawkr Mobile for Android</span>
+                </div>
+                <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', margin: '0 0 14px' }}>
+                  Native background push notifications with intruder snapshot previews
+                </p>
+                <a
+                  href="/api/download/gawkr.apk"
+                  download="gawkr.apk"
+                  className="btn-primary"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    background: 'var(--accent-emerald)',
+                    color: '#fff',
+                    textDecoration: 'none',
+                    padding: '10px 16px',
+                    borderRadius: '8px',
+                    fontWeight: 700,
+                    fontSize: '0.84rem',
+                    width: '100%'
+                  }}
+                >
+                  <Smartphone size={16} /> Download APK (v1.0.0)
+                </a>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
+            {currentTab === 'live' && (
+              <CameraGrid
+                cameras={cameras}
+                telemetryMap={telemetryMap}
+                layout={layout}
+                isAdmin={isAdmin}
+                onContextMenu={handleOpenContextMenu}
+                onTakeSnapshot={handleTakeSnapshot}
+                onOpenTelemetry={(cam) => setActiveTelemetryCamera(cam)}
+                onOpenZones={(cam) => setActiveZoneModalCamera(cam)}
+                onOpenAiSettings={(cam) => setActiveSettingsCamera(cam)}
+                onOpenDiscovery={() => setIsDiscoveryOpen(true)}
+              />
+            )}
+            {currentTab === 'clips' && (
+              <ClipReviewPage
+                events={events}
+                cameras={cameras}
+                isAdmin={isAdmin}
+                onPlayEvent={(evt) => setActivePlaybackEvent(evt)}
+                onDeleteEvent={handleDeleteEvent}
+                onRefreshEvents={loadInitialData}
+              />
+            )}
+            {currentTab === 'control_panel' && (
+              <ControlPanel isAdmin={isAdmin} currentUser={user} />
+            )}
+            {currentTab === 'briefing' && (
+              <DailyBriefingPage isAdmin={isAdmin} />
+            )}
+          </>
         )}
       </main>
 
