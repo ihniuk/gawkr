@@ -9,28 +9,28 @@ from app.models import NotificationsConfig, DetectionEvent
 def dispatch_event_notifications(event: DetectionEvent, config: NotificationsConfig, snapshot_path: Optional[str] = None):
     """Dispatches a confirmed AI alert to all configured notification services without blocking."""
     # 1. Telegram
-    if (config.telegram.enabled or (config.telegram.bot_token and config.telegram.chat_id)) and config.telegram.bot_token and config.telegram.chat_id:
+    if config.telegram.enabled and config.telegram.bot_token and config.telegram.chat_id:
         try:
             send_telegram_alert(config.telegram.bot_token, config.telegram.chat_id, event, snapshot_path)
         except Exception as e:
             print(f"Telegram dispatch error: {e}")
 
     # 2. Discord Webhook
-    if (config.discord.enabled or config.discord.webhook_url) and config.discord.webhook_url:
+    if config.discord.enabled and config.discord.webhook_url:
         try:
             send_discord_alert(config.discord.webhook_url, event, snapshot_path)
         except Exception as e:
             print(f"Discord dispatch error: {e}")
 
     # 3. Slack Webhook
-    if (config.slack.enabled or config.slack.webhook_url) and config.slack.webhook_url:
+    if config.slack.enabled and config.slack.webhook_url:
         try:
             send_slack_alert(config.slack.webhook_url, event)
         except Exception as e:
             print(f"Slack dispatch error: {e}")
 
     # 4. Pushover
-    if (config.pushover.enabled or (config.pushover.user_key and config.pushover.api_token)) and config.pushover.user_key and config.pushover.api_token:
+    if config.pushover.enabled and config.pushover.user_key and config.pushover.api_token:
         try:
             send_pushover_alert(config.pushover.user_key, config.pushover.api_token, event)
         except Exception as e:
