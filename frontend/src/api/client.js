@@ -1,10 +1,26 @@
 const API_BASE = '/api';
 
 export const authStorage = {
-  getToken: () => localStorage.getItem('nvr_token'),
-  setToken: (token) => localStorage.setItem('nvr_token', token),
-  clearToken: () => localStorage.removeItem('nvr_token'),
+  getToken: () => localStorage.getItem('nvr_token') || localStorage.getItem('token'),
+  setToken: (token) => {
+    if (token) {
+      localStorage.setItem('nvr_token', token);
+      localStorage.setItem('token', token);
+    } else {
+      localStorage.removeItem('nvr_token');
+      localStorage.removeItem('token');
+      localStorage.removeItem('gawkr_token');
+    }
+  },
+  clearToken: () => {
+    localStorage.removeItem('nvr_token');
+    localStorage.removeItem('token');
+    localStorage.removeItem('gawkr_token');
+  },
   getUser: () => {
+    // Only return a user if a token is actually present!
+    const token = localStorage.getItem('nvr_token') || localStorage.getItem('token');
+    if (!token) return null;
     try {
       const u = localStorage.getItem('nvr_user');
       return u ? JSON.parse(u) : null;
@@ -12,7 +28,10 @@ export const authStorage = {
       return null;
     }
   },
-  setUser: (user) => localStorage.setItem('nvr_user', JSON.stringify(user)),
+  setUser: (user) => {
+    if (user) localStorage.setItem('nvr_user', JSON.stringify(user));
+    else localStorage.removeItem('nvr_user');
+  },
   clearUser: () => localStorage.removeItem('nvr_user')
 };
 

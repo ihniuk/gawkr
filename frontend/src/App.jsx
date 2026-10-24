@@ -266,7 +266,192 @@ export default function App() {
     }
   };
 
+  // State for standalone login screen
+  const [loginUsername, setLoginUsername] = useState('admin');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  const handleInlineLogin = async (e) => {
+    if (e) e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError('');
+    try {
+      const res = await api.login(loginUsername, loginPassword);
+      setUser({ username: res.username, role: res.role });
+      loadInitialData();
+    } catch (err) {
+      setLoginError(err.message || 'Invalid username or password');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
   const isAdmin = user?.role === 'admin';
+
+  // If user is not authenticated, render ONLY the dedicated login page - no navigation or camera shell
+  if (!user) {
+    return (
+      <div style={{
+        minHeight: '100vh',
+        background: 'var(--bg-main, #0a0d14)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px'
+      }}>
+        <div className="glass-panel" style={{
+          maxWidth: '420px',
+          width: '100%',
+          padding: '36px 28px',
+          borderRadius: '16px',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.6)'
+        }}>
+          {/* Header */}
+          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
+            <div style={{
+              width: '60px',
+              height: '60px',
+              borderRadius: '16px',
+              background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.25) 0%, rgba(16, 185, 129, 0.25) 100%)',
+              border: '1px solid rgba(6, 182, 212, 0.4)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 14px'
+            }}>
+              <Shield size={30} color="var(--accent-cyan)" />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+              <span style={{ fontWeight: 800, fontSize: '1.5rem', letterSpacing: '-0.02em' }}>
+                GAWK<span style={{ color: 'var(--accent-cyan)' }}>R</span>
+              </span>
+              <span style={{
+                fontSize: '0.65rem',
+                fontWeight: 700,
+                fontFamily: 'var(--font-mono)',
+                background: 'rgba(6, 182, 212, 0.15)',
+                color: 'var(--accent-cyan)',
+                border: '1px solid rgba(6, 182, 212, 0.3)',
+                padding: '2px 6px',
+                borderRadius: '4px'
+              }}>
+                AI NVR
+              </span>
+            </div>
+            <p style={{ fontSize: '0.80rem', color: 'var(--text-muted)', marginTop: '6px', marginBottom: 0 }}>
+              Autonomous AI Surveillance &amp; Perimeter Defense
+            </p>
+          </div>
+
+          {/* Login Form */}
+          <form onSubmit={handleInlineLogin}>
+            <div style={{ marginBottom: '14px' }}>
+              <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+                USERNAME
+              </label>
+              <input
+                type="text"
+                className="glass-input"
+                style={{ width: '100%', padding: '10px 14px', fontSize: '0.88rem' }}
+                placeholder="admin"
+                value={loginUsername}
+                onChange={(e) => setLoginUsername(e.target.value)}
+                required
+              />
+            </div>
+
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+                PASSWORD
+              </label>
+              <input
+                type="password"
+                className="glass-input"
+                style={{ width: '100%', padding: '10px 14px', fontSize: '0.88rem' }}
+                placeholder="••••••••"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
+                required
+              />
+            </div>
+
+            {loginError && (
+              <div style={{
+                padding: '8px 12px',
+                borderRadius: '8px',
+                background: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: 'var(--accent-rose)',
+                fontSize: '0.80rem',
+                marginBottom: '16px',
+                textAlign: 'center'
+              }}>
+                {loginError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="btn-primary"
+              disabled={isLoggingIn}
+              style={{
+                width: '100%',
+                padding: '12px',
+                fontSize: '0.90rem',
+                fontWeight: 700,
+                justifyContent: 'center',
+                opacity: isLoggingIn ? 0.7 : 1
+              }}
+            >
+              <Lock size={16} /> {isLoggingIn ? 'Authenticating…' : 'Sign In to Dashboard'}
+            </button>
+          </form>
+
+          {/* Prominent Android APK Download Card */}
+          <div style={{
+            marginTop: '24px',
+            padding: '16px',
+            borderRadius: '12px',
+            background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 182, 212, 0.08) 100%)',
+            border: '1px solid rgba(16, 185, 129, 0.35)',
+            textAlign: 'center'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', marginBottom: '4px' }}>
+              <Smartphone size={18} color="var(--accent-emerald)" />
+              <span style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--accent-emerald)' }}>
+                Gawkr Mobile for Android
+              </span>
+            </div>
+            <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+              Native background push alerts with intruder snapshot previews
+            </p>
+            <a
+              href="/api/download/gawkr.apk"
+              download="gawkr.apk"
+              className="btn-primary"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '8px',
+                background: 'var(--accent-emerald)',
+                color: '#fff',
+                textDecoration: 'none',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontWeight: 700,
+                fontSize: '0.82rem',
+                width: '100%'
+              }}
+            >
+              <Smartphone size={15} /> Download Android App (APK)
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
@@ -286,109 +471,35 @@ export default function App() {
 
       {/* Main Content Area: Live Surveillance Matrix vs Clip Review & Timeline vs Control Panel */}
       <main style={{ flex: 1, display: 'flex' }}>
-        {!user ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px 16px' }}>
-            <div className="glass-panel" style={{ maxWidth: '440px', width: '100%', padding: '36px 28px', textAlign: 'center' }}>
-              <div style={{
-                width: '64px',
-                height: '64px',
-                borderRadius: '16px',
-                background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.2) 0%, rgba(16, 185, 129, 0.2) 100%)',
-                border: '1px solid rgba(6, 182, 212, 0.4)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                margin: '0 auto 16px'
-              }}>
-                <Shield size={32} color="var(--accent-cyan)" />
-              </div>
-              <h2 style={{ fontSize: '1.45rem', fontWeight: 800, margin: '0 0 6px', letterSpacing: '-0.02em' }}>
-                GAWK<span style={{ color: 'var(--accent-cyan)' }}>R</span> Surveillance
-              </h2>
-              <p style={{ fontSize: '0.84rem', color: 'var(--text-muted)', margin: '0 0 24px' }}>
-                Sign in to view live camera feeds and security matrix.
-              </p>
-
-              <button
-                className="btn-primary"
-                style={{ width: '100%', padding: '12px', fontSize: '0.94rem', justifyContent: 'center', marginBottom: '24px' }}
-                onClick={() => setIsLoginOpen(true)}
-              >
-                <Lock size={16} /> Sign In to Access Cameras
-              </button>
-
-              {/* Mobile-friendly Android App Card */}
-              <div style={{
-                padding: '18px 16px',
-                borderRadius: '12px',
-                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.12) 0%, rgba(6, 182, 212, 0.08) 100%)',
-                border: '1px solid rgba(16, 185, 129, 0.35)',
-                textAlign: 'center'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginBottom: '6px' }}>
-                  <Smartphone size={20} color="var(--accent-emerald)" />
-                  <span style={{ fontWeight: 700, fontSize: '0.90rem', color: 'var(--accent-emerald)' }}>Gawkr Mobile for Android</span>
-                </div>
-                <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', margin: '0 0 14px' }}>
-                  Native background push notifications with intruder snapshot previews
-                </p>
-                <a
-                  href="/api/download/gawkr.apk"
-                  download="gawkr.apk"
-                  className="btn-primary"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    background: 'var(--accent-emerald)',
-                    color: '#fff',
-                    textDecoration: 'none',
-                    padding: '10px 16px',
-                    borderRadius: '8px',
-                    fontWeight: 700,
-                    fontSize: '0.84rem',
-                    width: '100%'
-                  }}
-                >
-                  <Smartphone size={16} /> Download APK (v1.0.0)
-                </a>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <>
-            {currentTab === 'live' && (
-              <CameraGrid
-                cameras={cameras}
-                telemetryMap={telemetryMap}
-                layout={layout}
-                isAdmin={isAdmin}
-                onContextMenu={handleOpenContextMenu}
-                onTakeSnapshot={handleTakeSnapshot}
-                onOpenTelemetry={(cam) => setActiveTelemetryCamera(cam)}
-                onOpenZones={(cam) => setActiveZoneModalCamera(cam)}
-                onOpenAiSettings={(cam) => setActiveSettingsCamera(cam)}
-                onOpenDiscovery={() => setIsDiscoveryOpen(true)}
-              />
-            )}
-            {currentTab === 'clips' && (
-              <ClipReviewPage
-                events={events}
-                cameras={cameras}
-                isAdmin={isAdmin}
-                onPlayEvent={(evt) => setActivePlaybackEvent(evt)}
-                onDeleteEvent={handleDeleteEvent}
-                onRefreshEvents={loadInitialData}
-              />
-            )}
-            {currentTab === 'control_panel' && (
-              <ControlPanel isAdmin={isAdmin} currentUser={user} />
-            )}
-            {currentTab === 'briefing' && (
-              <DailyBriefingPage isAdmin={isAdmin} />
-            )}
-          </>
+        {currentTab === 'live' && (
+          <CameraGrid
+            cameras={cameras}
+            telemetryMap={telemetryMap}
+            layout={layout}
+            isAdmin={isAdmin}
+            onContextMenu={handleOpenContextMenu}
+            onTakeSnapshot={handleTakeSnapshot}
+            onOpenTelemetry={(cam) => setActiveTelemetryCamera(cam)}
+            onOpenZones={(cam) => setActiveZoneModalCamera(cam)}
+            onOpenAiSettings={(cam) => setActiveSettingsCamera(cam)}
+            onOpenDiscovery={() => setIsDiscoveryOpen(true)}
+          />
+        )}
+        {currentTab === 'clips' && (
+          <ClipReviewPage
+            events={events}
+            cameras={cameras}
+            isAdmin={isAdmin}
+            onPlayEvent={(evt) => setActivePlaybackEvent(evt)}
+            onDeleteEvent={handleDeleteEvent}
+            onRefreshEvents={loadInitialData}
+          />
+        )}
+        {currentTab === 'control_panel' && (
+          <ControlPanel isAdmin={isAdmin} currentUser={user} />
+        )}
+        {currentTab === 'briefing' && (
+          <DailyBriefingPage isAdmin={isAdmin} />
         )}
       </main>
 
