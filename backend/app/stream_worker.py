@@ -217,7 +217,8 @@ class CameraStreamWorker:
                             snap_frame,
                             sys_settings.ai_vision,
                             last_description=self.last_ai_description,
-                            stationary_objects_note=stationary_note
+                            stationary_objects_note=stationary_note,
+                            memory_config=sys_settings.ai_memory
                         )
                         evt.ai_description = ai_res.get("description")
                         evt.threat_level = ai_res.get("threat_level", "Safe")

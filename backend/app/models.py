@@ -1,6 +1,7 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 import time
+import uuid
 
 class UserRole:
     ADMIN = "admin"
@@ -203,12 +204,54 @@ class DetectionConfig(BaseModel):
     vehicle_min_confidence: float = 0.60      # Strict baseline to filter bins, posts, clutter
     animal_min_confidence: float = 0.45
 
+class AIMemoryItem(BaseModel):
+    id: str = Field(default_factory=lambda: f"mem_{uuid.uuid4().hex[:8]}")
+    category: str = "courier" # "courier", "vehicle", "person", "custom"
+    name: str # e.g. "Amazon Delivery", "Royal Mail", "Dave (Resident)"
+    cues: str # e.g. "Blue Prime van, driver in navy/blue vest carrying parcel with smile logo"
+    action_note: Optional[str] = "" # e.g. "Package delivery to porch"
+    threat_bias: str = "Safe" # "Safe", "Neutral", "Suspicious"
+    enabled: bool = True
+
+class AIMemoryConfig(BaseModel):
+    enabled: bool = True
+    items: List[AIMemoryItem] = Field(default_factory=lambda: [
+        AIMemoryItem(
+            id="mem_amazon",
+            category="courier",
+            name="Amazon Delivery",
+            cues="Blue Prime van, Mercedes/Ford van, courier wearing blue/dark vest carrying boxes or packages with Amazon smile logo",
+            action_note="Package delivery / courier drop-off",
+            threat_bias="Safe",
+            enabled=True
+        ),
+        AIMemoryItem(
+            id="mem_royalmail",
+            category="courier",
+            name="Royal Mail",
+            cues="Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages",
+            action_note="Postal delivery / mail drop",
+            threat_bias="Safe",
+            enabled=True
+        ),
+        AIMemoryItem(
+            id="mem_dpd",
+            category="courier",
+            name="DPD / Evri",
+            cues="White van with red cube DPD logo, or courier delivering parcels",
+            action_note="Courier package delivery",
+            threat_bias="Safe",
+            enabled=True
+        ),
+    ])
+
 class SystemSettings(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     ai_vision: AIVisionConfig = Field(default_factory=AIVisionConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     hardware: HardwareConfig = Field(default_factory=HardwareConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
+    ai_memory: AIMemoryConfig = Field(default_factory=AIMemoryConfig)
 
 class DiscoveredDevice(BaseModel):
     ip: str

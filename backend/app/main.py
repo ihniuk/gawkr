@@ -12,6 +12,7 @@ from app.models import (
     UserLogin, UserResponse, UserCreate, UserPasswordReset, UserPasswordChange, UserRoleUpdate, UserItem,
     CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
+    AIMemoryConfig, AIMemoryItem,
     TestStreamRequest, TestStreamResponse
 )
 from app.auth import (
@@ -375,6 +376,28 @@ async def apply_global_threshold_to_all(user: dict = Depends(require_admin)):
         "threshold": global_thresh,
         "updated_cameras": updated_count
     }
+
+@app.get("/api/settings/ai-memory")
+async def get_ai_memory_settings(user: dict = Depends(get_current_user)):
+    """Retrieves current AI recognition memory entities and configuration."""
+    settings = get_system_settings()
+    return settings.ai_memory.model_dump()
+
+@app.put("/api/settings/ai-memory")
+async def update_ai_memory_settings(memory_config: AIMemoryConfig, user: dict = Depends(require_admin)):
+    """Updates AI recognition memory entities (couriers, residents, vehicles)."""
+    settings = get_system_settings()
+    settings.ai_memory = memory_config
+    save_system_settings(settings)
+    return {"status": "updated", "ai_memory": memory_config.model_dump()}
+
+@app.post("/api/settings/ai-memory/reset-defaults")
+async def reset_ai_memory_defaults(user: dict = Depends(require_admin)):
+    """Restores default courier and visitor recognition templates."""
+    settings = get_system_settings()
+    settings.ai_memory = AIMemoryConfig()
+    save_system_settings(settings)
+    return {"status": "reset", "ai_memory": settings.ai_memory.model_dump()}
 
 @app.post("/api/settings/test-ai-vision")
 async def test_ai_vision(config: AIVisionConfig, user: dict = Depends(require_admin)):

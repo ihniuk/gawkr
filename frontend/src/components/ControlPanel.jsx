@@ -3,19 +3,35 @@ import {
   Sliders, HardDrive, Cpu, Bell, Save, CheckCircle, 
   AlertTriangle, Folder, RefreshCw, Send, Sparkles, 
   Eye, EyeOff, ShieldAlert, Zap, MessageSquare, Radio, Trash2, Video,
-  Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X
+  Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X,
+  Brain, Package, Truck, User, Plus, Edit2, Tag, Check, Info
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
 import { evaluatePasswordStrength } from '../utils/security';
 
 export default function ControlPanel({ isAdmin, currentUser }) {
-  const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'notifications', 'users'
+  const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'ai_memory', 'notifications', 'users'
   const [settings, setSettings] = useState(null);
   const [diskStats, setDiskStats] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  // AI Memory state
+  const [memoryFilter, setMemoryFilter] = useState('all'); // 'all', 'courier', 'person', 'vehicle', 'custom'
+  const [isEditingMemory, setIsEditingMemory] = useState(false);
+  const [editingMemoryItem, setEditingMemoryItem] = useState(null);
+  const [memoryForm, setMemoryForm] = useState({
+    id: '',
+    category: 'courier',
+    name: '',
+    cues: '',
+    action_note: '',
+    threat_bias: 'Safe',
+    enabled: true
+  });
+  const [memoryActionFeedback, setMemoryActionFeedback] = useState('');
 
   // AI Vision Testing state
   const [isTestingVision, setIsTestingVision] = useState(false);
@@ -74,6 +90,40 @@ export default function ControlPanel({ isAdmin, currentUser }) {
           person_min_confidence: 0.45,
           vehicle_min_confidence: 0.60,
           animal_min_confidence: 0.45
+        };
+      }
+      if (!s.ai_memory) {
+        s.ai_memory = {
+          enabled: true,
+          items: [
+            {
+              id: 'mem_amazon',
+              category: 'courier',
+              name: 'Amazon Delivery',
+              cues: 'Blue Prime van, Mercedes/Ford van, courier wearing blue/dark vest carrying boxes or packages with Amazon smile logo',
+              action_note: 'Package delivery / courier drop-off',
+              threat_bias: 'Safe',
+              enabled: true
+            },
+            {
+              id: 'mem_royalmail',
+              category: 'courier',
+              name: 'Royal Mail',
+              cues: 'Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages',
+              action_note: 'Postal delivery / mail drop',
+              threat_bias: 'Safe',
+              enabled: true
+            },
+            {
+              id: 'mem_dpd',
+              category: 'courier',
+              name: 'DPD / Evri',
+              cues: 'White van with red cube DPD logo, or courier delivering parcels',
+              action_note: 'Courier package delivery',
+              threat_bias: 'Safe',
+              enabled: true
+            }
+          ]
         };
       }
       setSettings(s);
@@ -303,6 +353,204 @@ export default function ControlPanel({ isAdmin, currentUser }) {
     }
   };
 
+  // AI Memory Handlers
+  const handleQuickAddPreset = (type) => {
+    let preset = null;
+    if (type === 'amazon') {
+      preset = {
+        category: 'courier',
+        name: 'Amazon Delivery',
+        cues: 'Blue Prime van, Mercedes/Ford delivery van, driver wearing dark blue or black vest carrying cardboard parcels or boxes with smile logo',
+        action_note: 'Package delivery / courier drop-off to porch',
+        threat_bias: 'Safe'
+      };
+    } else if (type === 'royalmail') {
+      preset = {
+        category: 'courier',
+        name: 'Royal Mail',
+        cues: 'Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages',
+        action_note: 'Postal delivery / letter drop',
+        threat_bias: 'Safe'
+      };
+    } else if (type === 'dpd') {
+      preset = {
+        category: 'courier',
+        name: 'DPD / Evri Delivery',
+        cues: 'White van with red cube DPD logo, or courier delivering parcels in courier attire',
+        action_note: 'Courier parcel drop',
+        threat_bias: 'Safe'
+      };
+    } else if (type === 'resident') {
+      preset = {
+        category: 'person',
+        name: 'Resident',
+        cues: 'Household resident, walking up driveway or to front door, carrying keys or bags',
+        action_note: 'Resident arriving home',
+        threat_bias: 'Safe'
+      };
+    } else if (type === 'vehicle') {
+      preset = {
+        category: 'vehicle',
+        name: 'Household Vehicle',
+        cues: 'Recognized family car maneuvering into driveway or parking bay',
+        action_note: 'Resident vehicle movement',
+        threat_bias: 'Safe'
+      };
+    } else if (type === 'visitor') {
+      preset = {
+        category: 'person',
+        name: 'Regular Contractor (e.g. Window Cleaner / Gardener)',
+        cues: 'Service contractor carrying ladder, hose, or gardening tools, working around perimeter',
+        action_note: 'Scheduled property maintenance / contractor visit',
+        threat_bias: 'Safe'
+      };
+    }
+
+    if (preset) {
+      setMemoryForm({
+        id: '',
+        ...preset,
+        enabled: true
+      });
+      setEditingMemoryItem(null);
+      setIsEditingMemory(true);
+    }
+  };
+
+  const handleOpenAddCustomMemory = () => {
+    setMemoryForm({
+      id: '',
+      category: 'courier',
+      name: '',
+      cues: '',
+      action_note: '',
+      threat_bias: 'Safe',
+      enabled: true
+    });
+    setEditingMemoryItem(null);
+    setIsEditingMemory(true);
+  };
+
+  const handleOpenEditMemory = (item) => {
+    setMemoryForm({
+      id: item.id || '',
+      category: item.category || 'courier',
+      name: item.name || '',
+      cues: item.cues || '',
+      action_note: item.action_note || '',
+      threat_bias: item.threat_bias || 'Safe',
+      enabled: item.enabled ?? true
+    });
+    setEditingMemoryItem(item);
+    setIsEditingMemory(true);
+  };
+
+  const handleSaveMemoryItem = async (e) => {
+    if (e) e.preventDefault();
+    if (!memoryForm.name.trim() || !memoryForm.cues.trim()) {
+      alert('Please provide an entity name and visual identifying cues.');
+      return;
+    }
+
+    const currentItems = settings.ai_memory?.items || [];
+    let updatedItems;
+
+    if (editingMemoryItem) {
+      updatedItems = currentItems.map(item => 
+        item.id === editingMemoryItem.id ? { ...memoryForm, id: item.id } : item
+      );
+    } else {
+      const newItem = {
+        ...memoryForm,
+        id: `mem_${Date.now().toString(36)}`
+      };
+      updatedItems = [newItem, ...currentItems];
+    }
+
+    const updatedSettings = {
+      ...settings,
+      ai_memory: {
+        ...(settings.ai_memory || { enabled: true }),
+        items: updatedItems
+      }
+    };
+
+    setSettings(updatedSettings);
+    setIsEditingMemory(false);
+    setEditingMemoryItem(null);
+
+    try {
+      await api.updateSettings(updatedSettings);
+      setMemoryActionFeedback(`✓ "${memoryForm.name}" saved to AI Memory!`);
+      setTimeout(() => setMemoryActionFeedback(''), 3500);
+    } catch (err) {
+      console.error('Failed to auto-save AI memory:', err);
+    }
+  };
+
+  const handleToggleMemoryItem = async (itemId) => {
+    const currentItems = settings.ai_memory?.items || [];
+    const updatedItems = currentItems.map(item => 
+      item.id === itemId ? { ...item, enabled: !item.enabled } : item
+    );
+
+    const updatedSettings = {
+      ...settings,
+      ai_memory: {
+        ...(settings.ai_memory || { enabled: true }),
+        items: updatedItems
+      }
+    };
+
+    setSettings(updatedSettings);
+    try {
+      await api.updateSettings(updatedSettings);
+    } catch (err) {
+      console.error('Failed to toggle AI memory item:', err);
+    }
+  };
+
+  const handleDeleteMemoryItem = async (itemId, name) => {
+    if (!window.confirm(`Are you sure you want to remove "${name}" from AI Memory?`)) return;
+
+    const currentItems = settings.ai_memory?.items || [];
+    const updatedItems = currentItems.filter(item => item.id !== itemId);
+
+    const updatedSettings = {
+      ...settings,
+      ai_memory: {
+        ...(settings.ai_memory || { enabled: true }),
+        items: updatedItems
+      }
+    };
+
+    setSettings(updatedSettings);
+    try {
+      await api.updateSettings(updatedSettings);
+      setMemoryActionFeedback(`Removed "${name}" from AI Memory.`);
+      setTimeout(() => setMemoryActionFeedback(''), 3500);
+    } catch (err) {
+      console.error('Failed to delete AI memory item:', err);
+    }
+  };
+
+  const handleResetMemoryDefaults = async () => {
+    if (!window.confirm('Reset AI Memory to default templates (Amazon, Royal Mail, DPD)? Existing custom entries will be replaced.')) return;
+
+    try {
+      const res = await api.resetAIMemoryDefaults();
+      const updatedSettings = {
+        ...settings,
+        ai_memory: res.ai_memory
+      };
+      setSettings(updatedSettings);
+      setMemoryActionFeedback('✓ AI Memory reset to default templates.');
+      setTimeout(() => setMemoryActionFeedback(''), 3500);
+    } catch (err) {
+      alert('Failed to reset AI memory: ' + (err.message || err));
+    }
+  };
+
   if (isLoading || !settings) {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px', color: 'var(--text-muted)' }}>
@@ -378,12 +626,12 @@ export default function ControlPanel({ isAdmin, currentUser }) {
         gap: '3px',
         marginBottom: '20px',
         width: '100%',
-        maxWidth: '820px'
+        maxWidth: '960px'
       }}>
         <button
           className="btn-glass"
           style={{
-            flex: '1 1 140px',
+            flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
             background: activeTab === 'storage' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
@@ -401,7 +649,7 @@ export default function ControlPanel({ isAdmin, currentUser }) {
         <button
           className="btn-glass"
           style={{
-            flex: '1 1 140px',
+            flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
             background: activeTab === 'hardware' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
@@ -419,7 +667,7 @@ export default function ControlPanel({ isAdmin, currentUser }) {
         <button
           className="btn-glass"
           style={{
-            flex: '1 1 140px',
+            flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
             background: activeTab === 'ai_vision' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
@@ -437,7 +685,25 @@ export default function ControlPanel({ isAdmin, currentUser }) {
         <button
           className="btn-glass"
           style={{
-            flex: '1 1 140px',
+            flex: '1 1 120px',
+            border: 'none',
+            borderRadius: '8px',
+            background: activeTab === 'ai_memory' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'ai_memory' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => setActiveTab('ai_memory')}
+        >
+          <Brain size={14} /> AI Memory
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
             background: activeTab === 'notifications' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
@@ -455,7 +721,7 @@ export default function ControlPanel({ isAdmin, currentUser }) {
         <button
           className="btn-glass"
           style={{
-            flex: '1 1 140px',
+            flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
             background: activeTab === 'users' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
@@ -1292,6 +1558,523 @@ export default function ControlPanel({ isAdmin, currentUser }) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ----------------- TAB: AI MEMORY & KNOWN ENTITIES ----------------- */}
+      {activeTab === 'ai_memory' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Top Master Switch & Overview Card */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '42px',
+                  height: '42px',
+                  borderRadius: '10px',
+                  background: 'rgba(168, 85, 247, 0.15)',
+                  border: '1px solid rgba(168, 85, 247, 0.35)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#c084fc'
+                }}>
+                  <Brain size={24} />
+                </div>
+                <div>
+                  <h3 style={{ fontSize: '1.1rem', fontWeight: 800, letterSpacing: '-0.01em', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    AI Recognition Memory & Known Entities
+                  </h3>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Teach Gawkr to identify familiar visitors, delivery couriers, residents, and vehicles so notifications name them directly.
+                  </p>
+                </div>
+              </div>
+
+              {/* Master Toggle & Add Button */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', background: 'rgba(255,255,255,0.04)', padding: '6px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                  <input
+                    type="checkbox"
+                    checked={settings.ai_memory?.enabled ?? true}
+                    onChange={(e) => {
+                      const updated = {
+                        ...settings,
+                        ai_memory: {
+                          ...(settings.ai_memory || {}),
+                          enabled: e.target.checked,
+                          items: settings.ai_memory?.items || []
+                        }
+                      };
+                      setSettings(updated);
+                    }}
+                    style={{ accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <span style={{ fontSize: '0.82rem', fontWeight: 600 }}>
+                    {settings.ai_memory?.enabled ?? true ? 'AI Memory Active' : 'AI Memory Paused'}
+                  </span>
+                </label>
+
+                {isAdmin && (
+                  <button 
+                    className="btn-primary" 
+                    onClick={handleOpenAddCustomMemory}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', padding: '7px 14px' }}
+                  >
+                    <Plus size={15} /> Add Entity
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Status & Feedback message */}
+            {memoryActionFeedback && (
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.12)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                color: '#34d399',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontSize: '0.82rem',
+                marginBottom: '16px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <Check size={16} /> {memoryActionFeedback}
+              </div>
+            )}
+
+            {/* Quick Presets Bar */}
+            {isAdmin && (
+              <div style={{
+                marginTop: '12px',
+                paddingTop: '16px',
+                borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '4px' }}>
+                  Quick Presets:
+                </span>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ fontSize: '0.76rem', padding: '4px 10px', borderRadius: '6px' }}
+                  onClick={() => handleQuickAddPreset('amazon')}
+                >
+                  <Truck size={12} color="#f59e0b" style={{ marginRight: '4px' }} /> + Amazon
+                </button>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ fontSize: '0.76rem', padding: '4px 10px', borderRadius: '6px' }}
+                  onClick={() => handleQuickAddPreset('royal_mail')}
+                >
+                  <Truck size={12} color="#ef4444" style={{ marginRight: '4px' }} /> + Royal Mail
+                </button>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ fontSize: '0.76rem', padding: '4px 10px', borderRadius: '6px' }}
+                  onClick={() => handleQuickAddPreset('dpd')}
+                >
+                  <Truck size={12} color="#06b6d4" style={{ marginRight: '4px' }} /> + DPD / Evri
+                </button>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ fontSize: '0.76rem', padding: '4px 10px', borderRadius: '6px' }}
+                  onClick={() => handleQuickAddPreset('resident')}
+                >
+                  <User size={12} color="#10b981" style={{ marginRight: '4px' }} /> + Family Resident
+                </button>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  style={{ fontSize: '0.76rem', padding: '4px 10px', borderRadius: '6px' }}
+                  onClick={() => handleQuickAddPreset('vehicle')}
+                >
+                  <Package size={12} color="#a855f7" style={{ marginRight: '4px' }} /> + Household Vehicle
+                </button>
+                
+                <div style={{ marginLeft: 'auto' }}>
+                  <button
+                    type="button"
+                    className="btn-glass"
+                    style={{ fontSize: '0.72rem', padding: '4px 10px', color: 'var(--text-muted)' }}
+                    onClick={handleResetMemoryDefaults}
+                    title="Reset to default templates"
+                  >
+                    <RefreshCw size={11} style={{ marginRight: '4px' }} /> Reset Defaults
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Category Filter Tabs */}
+          <div style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            {[
+              { id: 'all', label: 'All Entities' },
+              { id: 'courier', label: 'Couriers & Delivery' },
+              { id: 'person', label: 'Residents & Family' },
+              { id: 'vehicle', label: 'Household Vehicles' },
+              { id: 'custom', label: 'Custom' }
+            ].map(tab => {
+              const count = tab.id === 'all'
+                ? (settings.ai_memory?.items || []).length
+                : (settings.ai_memory?.items || []).filter(i => i.category === tab.id).length;
+              const isActive = memoryFilter === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  className="btn-glass"
+                  onClick={() => setMemoryFilter(tab.id)}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '8px',
+                    fontSize: '0.78rem',
+                    fontWeight: isActive ? 700 : 500,
+                    background: isActive ? 'rgba(168, 85, 247, 0.25)' : 'rgba(255,255,255,0.03)',
+                    borderColor: isActive ? 'rgba(168, 85, 247, 0.45)' : 'rgba(255,255,255,0.08)',
+                    color: isActive ? '#d8b4fe' : 'var(--text-muted)'
+                  }}
+                >
+                  {tab.label} <span style={{ opacity: 0.7, fontSize: '0.72rem', marginLeft: '4px' }}>({count})</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Cards Grid */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+            gap: '16px'
+          }}>
+            {(settings.ai_memory?.items || [])
+              .filter(item => memoryFilter === 'all' || item.category === memoryFilter)
+              .map(item => {
+                const isItemEnabled = item.enabled ?? true;
+                const categoryColor = item.category === 'courier' ? '#f59e0b'
+                  : item.category === 'person' ? '#10b981'
+                  : item.category === 'vehicle' ? '#a855f7' : '#06b6d4';
+                const threatColor = item.threat_bias === 'Suspicious' ? '#f59e0b'
+                  : item.threat_bias === 'High' ? '#ef4444' : '#10b981';
+
+                return (
+                  <div
+                    key={item.id}
+                    className="glass-panel"
+                    style={{
+                      borderRadius: '12px',
+                      padding: '16px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      justifyContent: 'space-between',
+                      opacity: isItemEnabled ? 1 : 0.6,
+                      border: isItemEnabled ? '1px solid rgba(255, 255, 255, 0.12)' : '1px dashed rgba(255, 255, 255, 0.08)',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    <div>
+                      {/* Top Row: Category Pill, Threat Bias Pill & Toggle */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px',
+                            fontSize: '0.7rem',
+                            fontWeight: 700,
+                            padding: '2px 8px',
+                            borderRadius: '5px',
+                            background: `${categoryColor}20`,
+                            color: categoryColor,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.04em'
+                          }}>
+                            {item.category === 'courier' && <Truck size={11} />}
+                            {item.category === 'person' && <User size={11} />}
+                            {item.category === 'vehicle' && <Package size={11} />}
+                            {item.category === 'custom' && <Tag size={11} />}
+                            {item.category}
+                          </span>
+
+                          <span style={{
+                            fontSize: '0.7rem',
+                            fontWeight: 600,
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: `${threatColor}20`,
+                            color: threatColor
+                          }}>
+                            {item.threat_bias}
+                          </span>
+                        </div>
+
+                        {isAdmin && (
+                          <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '0.72rem', color: isItemEnabled ? 'var(--text-main)' : 'var(--text-muted)' }}>
+                            <input
+                              type="checkbox"
+                              checked={isItemEnabled}
+                              onChange={() => handleToggleMemoryItem(item.id)}
+                              style={{ accentColor: 'var(--accent-cyan)' }}
+                            />
+                            <span>{isItemEnabled ? 'Active' : 'Muted'}</span>
+                          </label>
+                        )}
+                      </div>
+
+                      {/* Entity Name */}
+                      <h4 style={{ fontSize: '0.98rem', fontWeight: 800, marginBottom: '8px', color: '#fff' }}>
+                        {item.name}
+                      </h4>
+
+                      {/* Visual Cues */}
+                      <div style={{
+                        background: 'rgba(0, 0, 0, 0.25)',
+                        border: '1px solid rgba(255, 255, 255, 0.05)',
+                        borderRadius: '8px',
+                        padding: '8px 10px',
+                        marginBottom: '8px',
+                        fontSize: '0.78rem',
+                        lineHeight: '1.35',
+                        color: 'var(--text-muted)'
+                      }}>
+                        <span style={{ fontWeight: 700, color: 'var(--accent-cyan)', display: 'block', marginBottom: '2px', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                          Visual Identifiers / Cues
+                        </span>
+                        {item.cues}
+                      </div>
+
+                      {/* Action Note */}
+                      {item.action_note && (
+                        <div style={{
+                          background: 'rgba(168, 85, 247, 0.08)',
+                          border: '1px solid rgba(168, 85, 247, 0.15)',
+                          borderRadius: '8px',
+                          padding: '6px 10px',
+                          fontSize: '0.75rem',
+                          color: '#d8b4fe',
+                          lineHeight: '1.3'
+                        }}>
+                          <span style={{ fontWeight: 700, display: 'block', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.04em', opacity: 0.8 }}>
+                            Naming Directive
+                          </span>
+                          "{item.action_note}"
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Bottom Actions */}
+                    {isAdmin && (
+                      <div style={{
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        alignItems: 'center',
+                        gap: '6px',
+                        marginTop: '12px',
+                        paddingTop: '10px',
+                        borderTop: '1px solid rgba(255, 255, 255, 0.05)'
+                      }}>
+                        <button
+                          type="button"
+                          className="btn-glass"
+                          onClick={() => handleOpenEditMemory(item)}
+                          style={{ padding: '4px 8px', fontSize: '0.74rem' }}
+                          title="Edit Entity"
+                        >
+                          <Edit2 size={12} style={{ marginRight: '4px' }} /> Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-glass"
+                          onClick={() => handleDeleteMemoryItem(item.id, item.name)}
+                          style={{ padding: '4px 8px', fontSize: '0.74rem', color: '#fb7185' }}
+                          title="Delete Entity"
+                        >
+                          <Trash2 size={12} style={{ marginRight: '4px' }} /> Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+          </div>
+
+          {/* Empty state */}
+          {(!settings.ai_memory?.items || settings.ai_memory.items.filter(i => memoryFilter === 'all' || i.category === memoryFilter).length === 0) && (
+            <div className="glass-panel" style={{
+              borderRadius: '12px',
+              padding: '36px',
+              textAlign: 'center',
+              color: 'var(--text-muted)'
+            }}>
+              <Brain size={36} style={{ margin: '0 auto 12px auto', opacity: 0.4, color: '#a855f7' }} />
+              <h4 style={{ fontSize: '0.96rem', fontWeight: 700, marginBottom: '6px' }}>No memory entities in this category</h4>
+              <p style={{ fontSize: '0.8rem', maxWidth: '420px', margin: '0 auto 16px auto' }}>
+                Teach Gawkr who to look out for by clicking "+ Add Entity" or selecting one of the quick presets above.
+              </p>
+              {isAdmin && (
+                <button className="btn-primary" onClick={handleOpenAddCustomMemory} style={{ fontSize: '0.8rem', padding: '6px 14px' }}>
+                  <Plus size={14} style={{ marginRight: '4px' }} /> Add Entity
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ----------------- AI MEMORY EDIT / CREATE MODAL ----------------- */}
+      {isEditingMemory && (
+        <div className="modal-overlay" onClick={() => setIsEditingMemory(false)} style={{ zIndex: 1100 }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px', width: '92%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Brain size={20} color="#a855f7" />
+                <div>
+                  <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>
+                    {editingMemoryItem ? 'Edit Recognized Entity' : 'Add Recognized Entity'}
+                  </h3>
+                  <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    Instruct AI vision how to recognize and label this subject
+                  </p>
+                </div>
+              </div>
+              <button className="btn-glass" onClick={() => setIsEditingMemory(false)} style={{ padding: '6px' }}>
+                <X size={15} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveMemoryItem} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Category */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px' }}>
+                  Category
+                </label>
+                <select
+                  value={memoryForm.category}
+                  onChange={(e) => setMemoryForm({ ...memoryForm, category: e.target.value })}
+                  className="input-field"
+                  style={{ width: '100%', fontSize: '0.82rem' }}
+                >
+                  <option value="courier">Courier / Delivery Service</option>
+                  <option value="person">Resident / Frequent Visitor</option>
+                  <option value="vehicle">Household / Regular Vehicle</option>
+                  <option value="custom">Custom Entity</option>
+                </select>
+              </div>
+
+              {/* Entity Name */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px' }}>
+                  Entity Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g., Amazon Delivery, Royal Mail, Resident: Sarah"
+                  value={memoryForm.name}
+                  onChange={(e) => setMemoryForm({ ...memoryForm, name: e.target.value })}
+                  className="input-field"
+                  style={{ width: '100%', fontSize: '0.82rem' }}
+                />
+              </div>
+
+              {/* Visual Identifiers / Cues */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px' }}>
+                  Visual Cues & Identifiers *
+                </label>
+                <textarea
+                  required
+                  rows={3}
+                  placeholder="e.g., Navy blue uniform or van, Prime arrow logo, high-vis vest, carrying parcels or cardboard boxes"
+                  value={memoryForm.cues}
+                  onChange={(e) => setMemoryForm({ ...memoryForm, cues: e.target.value })}
+                  className="input-field"
+                  style={{ width: '100%', fontSize: '0.82rem', resize: 'vertical' }}
+                />
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px', display: 'block' }}>
+                  Colors, logos, clothing, packages, or specific visual signs the camera will see.
+                </span>
+              </div>
+
+              {/* AI Naming Directive */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px' }}>
+                  AI Naming & Event Directive (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g., Explicitly identify as 'Amazon delivery driver delivering a parcel'"
+                  value={memoryForm.action_note}
+                  onChange={(e) => setMemoryForm({ ...memoryForm, action_note: e.target.value })}
+                  className="input-field"
+                  style={{ width: '100%', fontSize: '0.82rem' }}
+                />
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px', display: 'block' }}>
+                  Tells the AI model how to formulate the event summary sentence.
+                </span>
+              </div>
+
+              {/* Threat Bias */}
+              <div>
+                <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px' }}>
+                  Threat Bias Level
+                </label>
+                <select
+                  value={memoryForm.threat_bias}
+                  onChange={(e) => setMemoryForm({ ...memoryForm, threat_bias: e.target.value })}
+                  className="input-field"
+                  style={{ width: '100%', fontSize: '0.82rem' }}
+                >
+                  <option value="Safe">Safe (Normal routine activity - bias toward Safe)</option>
+                  <option value="Suspicious">Suspicious (Watch closely - flag for review)</option>
+                  <option value="High">High Alert (Immediate threat warning)</option>
+                </select>
+              </div>
+
+              {/* Active Toggle */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.8rem', marginTop: '4px' }}>
+                <input
+                  type="checkbox"
+                  checked={memoryForm.enabled}
+                  onChange={(e) => setMemoryForm({ ...memoryForm, enabled: e.target.checked })}
+                  style={{ accentColor: 'var(--accent-cyan)' }}
+                />
+                <span>Enable this recognition in AI vision analysis</span>
+              </label>
+
+              {/* Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '12px' }}>
+                <button
+                  type="button"
+                  className="btn-glass"
+                  onClick={() => setIsEditingMemory(false)}
+                  style={{ fontSize: '0.82rem', padding: '6px 14px' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn-primary"
+                  style={{ fontSize: '0.82rem', padding: '6px 16px' }}
+                >
+                  <Save size={14} style={{ marginRight: '4px' }} /> Save Entity
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

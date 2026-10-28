@@ -15,7 +15,7 @@ from app.config import (
 )
 from app.models import (
     CameraModel, CameraSettings, DetectionEvent, DetectionObject,
-    SystemSettings, StorageConfig, AIVisionConfig, NotificationsConfig
+    SystemSettings, StorageConfig, AIVisionConfig, NotificationsConfig, AIMemoryConfig, AIMemoryItem
 )
 
 DB_PATH = DATA_DIR / "vision_nvr.db"
@@ -298,6 +298,8 @@ def get_system_settings() -> SystemSettings:
                 settings.storage.recordings_dir = str(RECORDINGS_DIR)
             if not settings.storage.snapshots_dir:
                 settings.storage.snapshots_dir = str(SNAPSHOTS_DIR)
+            if not getattr(settings, 'ai_memory', None):
+                settings.ai_memory = AIMemoryConfig()
             _cached_sys_settings = settings
             _cached_sys_settings_time = now
             return settings

@@ -296,6 +296,23 @@ export const api = {
     });
   },
 
+  async getAIMemory() {
+    return apiFetch('/settings/ai-memory');
+  },
+
+  async updateAIMemory(memoryConfig) {
+    return apiFetch('/settings/ai-memory', {
+      method: 'PUT',
+      body: JSON.stringify(memoryConfig)
+    });
+  },
+
+  async resetAIMemoryDefaults() {
+    return apiFetch('/settings/ai-memory/reset-defaults', {
+      method: 'POST'
+    });
+  },
+
   async testNotification(service, payload) {
     return apiFetch(`/settings/test-notification/${service}`, {
       method: 'POST',

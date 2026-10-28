@@ -34,7 +34,8 @@ def analyze_snapshot_with_ai(
     image_input,
     config: AIVisionConfig,
     last_description: Optional[str] = None,
-    stationary_objects_note: Optional[str] = None
+    stationary_objects_note: Optional[str] = None,
+    memory_config: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Sends frame snapshot to configured AI Vision Provider (Gemini, OpenAI, Ollama, Custom).
@@ -72,6 +73,29 @@ def analyze_snapshot_with_ai(
 
     if stationary_objects_note:
         prompt_parts.append(f"- Context: {stationary_objects_note}")
+
+    if memory_config and getattr(memory_config, 'enabled', True):
+        items = getattr(memory_config, 'items', [])
+        active_items = [m for m in items if getattr(m, 'enabled', True)]
+        if active_items:
+            mem_lines = [
+                "\nAI RECOGNITION MEMORY & KNOWN ENTITIES:",
+                "You have learned memory knowledge of regular visitors, delivery couriers, recognized vehicles, and residents.",
+                "If any subject in the snapshot matches the visual cues below, EXPLICITLY identify them by their recognized name in your 1-2 sentence description and assign their corresponding threat level:"
+            ]
+            for item in active_items:
+                name = getattr(item, 'name', '')
+                category = getattr(item, 'category', 'custom').upper()
+                cues = getattr(item, 'cues', '')
+                action_note = getattr(item, 'action_note', '')
+                threat = getattr(item, 'threat_bias', 'Safe')
+                note_str = f" Context/Action: {action_note}." if action_note else ""
+                mem_lines.append(f"- [{category}: {name}] Visual cues: {cues}.{note_str} (Threat: [{threat}])")
+            
+            mem_lines.append(
+                "CRITICAL: When recognized, refer to them directly (e.g. 'Amazon delivery driver', 'Royal Mail postman', 'Dave (Resident)') instead of a generic 'unidentified person' or 'unknown vehicle'."
+            )
+            prompt_parts.append("\n".join(mem_lines))
 
     prompt = "\n".join(prompt_parts)
 
