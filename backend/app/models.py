@@ -212,6 +212,7 @@ class AIMemoryItem(BaseModel):
     action_note: Optional[str] = "" # e.g. "Package delivery to porch"
     threat_bias: str = "Safe" # "Safe", "Neutral", "Suspicious"
     enabled: bool = True
+    image_url: Optional[str] = None # Reference snapshot image path or URL
 
 class AIMemoryConfig(BaseModel):
     enabled: bool = True

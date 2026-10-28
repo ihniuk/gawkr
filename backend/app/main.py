@@ -1,8 +1,12 @@
 import asyncio
+import base64
 import time
+import uuid
+from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
+from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import StreamingResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -27,7 +31,7 @@ from app.storage import (
     load_recent_events_from_db, delete_event_from_db,
     get_system_settings, save_system_settings, get_storage_disk_stats
 )
-from app.ai_vision import test_ai_vision_connection
+from app.ai_vision import test_ai_vision_connection, extract_memory_profile_from_snapshot
 from app.notification_dispatchers import (
     send_telegram_alert, send_discord_alert, send_slack_alert, send_pushover_alert
 )
@@ -398,6 +402,66 @@ async def reset_ai_memory_defaults(user: dict = Depends(require_admin)):
     settings.ai_memory = AIMemoryConfig()
     save_system_settings(settings)
     return {"status": "reset", "ai_memory": settings.ai_memory.model_dump()}
+
+class ExtractCuesRequest(BaseModel):
+    snapshot_path: Optional[str] = None
+    image_base64: Optional[str] = None
+
+@app.post("/api/settings/ai-memory/upload-image")
+async def upload_ai_memory_image(file: UploadFile = File(...), user: dict = Depends(require_admin)):
+    """Uploads an image file to serve as a visual reference snapshot in AI Memory."""
+    ext = Path(file.filename or "snapshot.jpg").suffix.lower()
+    if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+        ext = ".jpg"
+    filename = f"memory_ref_{uuid.uuid4().hex[:8]}{ext}"
+    dest = SNAPSHOTS_DIR / filename
+    content = await file.read()
+    with open(dest, "wb") as f:
+        f.write(content)
+    return {
+        "status": "uploaded",
+        "snapshot_path": filename,
+        "snapshot_url": f"/api/snapshots/{filename}"
+    }
+
+@app.post("/api/settings/ai-memory/extract-cues")
+async def extract_ai_memory_cues(req: ExtractCuesRequest, user: dict = Depends(require_admin)):
+    """Uses configured AI Vision to analyze a snapshot and automatically extract visual identifying cues, subject name, category, and threat bias."""
+    settings = get_system_settings()
+    img_input = None
+    if req.image_base64:
+        b64_data = req.image_base64.split(",")[-1]
+        img_input = base64.b64decode(b64_data)
+    elif req.snapshot_path:
+        filename = Path(req.snapshot_path).name
+        full_path = SNAPSHOTS_DIR / filename
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="Snapshot file not found")
+        img_input = full_path
+    else:
+        raise HTTPException(status_code=400, detail="Either snapshot_path or image_base64 is required")
+
+    profile = extract_memory_profile_from_snapshot(img_input, settings.ai_vision)
+    return profile
+
+@app.get("/api/settings/ai-memory/recent-snapshots")
+async def get_recent_memory_snapshots(limit: int = 30, user: dict = Depends(get_current_user)):
+    """Returns recent snapshot files from camera events for visual memory picking."""
+    events = load_recent_events_from_db(limit=limit)
+    snapshots = []
+    seen = set()
+    for e in events:
+        if e.snapshot_url and e.snapshot_url not in seen:
+            seen.add(e.snapshot_url)
+            snapshots.append({
+                "snapshot_url": e.snapshot_url,
+                "snapshot_path": Path(e.snapshot_url).name,
+                "camera_name": e.camera_name,
+                "timestamp": e.timestamp,
+                "ai_description": e.ai_description or "",
+                "threat_level": e.threat_level or "Safe"
+            })
+    return {"snapshots": snapshots}
 
 @app.post("/api/settings/test-ai-vision")
 async def test_ai_vision(config: AIVisionConfig, user: dict = Depends(require_admin)):

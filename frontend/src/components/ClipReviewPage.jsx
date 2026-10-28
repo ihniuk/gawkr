@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Film, LayoutGrid, Clock, Calendar, Filter, 
   Download, Play, Trash2, Camera, Search, ChevronRight, 
-  Layers, CheckCircle, Eye, RefreshCw, Sparkles 
+  Layers, CheckCircle, Eye, RefreshCw, Sparkles, Brain
 } from 'lucide-react';
 
 export default function ClipReviewPage({
@@ -11,7 +11,8 @@ export default function ClipReviewPage({
   isAdmin,
   onPlayEvent,
   onDeleteEvent,
-  onRefreshEvents
+  onRefreshEvents,
+  onAddToMemory
 }) {
   const [viewMode, setViewMode] = useState('mosaic'); // 'mosaic', 'timeline', 'list'
   const [selectedCameraId, setSelectedCameraId] = useState('all');
@@ -414,6 +415,16 @@ export default function ClipReviewPage({
                     >
                       <Play size={12} color="var(--accent-cyan)" /> Play
                     </button>
+                    {onAddToMemory && (
+                      <button
+                        className="btn-glass"
+                        style={{ padding: '6px 8px', color: '#d8b4fe' }}
+                        title="Add this snapshot to AI Memory"
+                        onClick={(e) => { e.stopPropagation(); onAddToMemory(evt); }}
+                      >
+                        <Brain size={13} />
+                      </button>
+                    )}
                     {isAdmin && (
                       <button
                         className="btn-glass"
@@ -555,6 +566,16 @@ export default function ClipReviewPage({
                             <div style={{ fontWeight: 700, fontSize: '0.86rem', color: '#fff' }}>
                               {evt.camera_name}
                             </div>
+                            {onAddToMemory && (
+                              <button
+                                className="btn-glass"
+                                style={{ padding: '3px 6px', border: 'none', color: '#d8b4fe' }}
+                                title="Add to AI Memory"
+                                onClick={(e) => { e.stopPropagation(); onAddToMemory(evt); }}
+                              >
+                                <Brain size={13} />
+                              </button>
+                            )}
                             {isAdmin && (
                               <button
                                 className="btn-glass"

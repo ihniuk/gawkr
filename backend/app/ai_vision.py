@@ -245,3 +245,129 @@ def test_ai_vision_connection(config: AIVisionConfig) -> Dict[str, Any]:
     cv2.rectangle(test_img, (490, 220), (550, 270), (80, 60, 40), -1)
 
     return analyze_snapshot_with_ai(test_img, config)
+
+def extract_memory_profile_from_snapshot(
+    image_input,
+    config: AIVisionConfig
+) -> Dict[str, Any]:
+    """
+    Analyzes an image snapshot to profile a subject (courier, person, vehicle)
+    for AI Recognition Memory, returning suggested name, category, visual cues, and action.
+    """
+    if not config.enabled or not config.api_key and config.provider != 'ollama':
+        return {
+            "name": "Recognized Subject",
+            "category": "custom",
+            "cues": "Visual subject detected in snapshot.",
+            "action_note": "",
+            "threat_bias": "Safe"
+        }
+
+    b64_img = encode_image_base64(image_input)
+    prompt = (
+        "You are an expert security vision AI profiling a subject from a camera snapshot to add to AI Recognition Memory. "
+        "Examine the primary person, delivery courier, vehicle, or subject in this image.\n"
+        "Respond with ONLY a single valid JSON object, without markdown formatting or code blocks, matching this schema:\n"
+        "{\n"
+        '  "name": "<Short descriptive name, e.g. Amazon Delivery Driver, Royal Mail Postie, Resident in Navy Jacket, White Van>",\n'
+        '  "category": "<one of: courier, person, vehicle, custom>",\n'
+        '  "cues": "<Detailed distinctive visual cues, including clothing colors, logos, badges, hats, packages, vehicle make/color, distinctive markings>",\n'
+        '  "action_note": "<Observed activity, e.g. Delivering package to front door, Walking to entrance, Parked in driveway>",\n'
+        '  "threat_bias": "<one of: Safe, Suspicious, High>"\n'
+        "}"
+    )
+
+    raw_text = ""
+    try:
+        if config.provider == "gemini":
+            model = config.model_name or "gemini-1.5-flash"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={config.api_key}"
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": b64_img
+                            }
+                        }
+                    ]
+                }]
+            }
+            resp = requests.post(url, json=payload, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        elif config.provider in ["openai", "custom"]:
+            base = config.base_url.rstrip('/') if config.base_url else "https://api.openai.com/v1"
+            url = f"{base}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": config.model_name or "gpt-4o-mini",
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+                    ]
+                }],
+                "max_tokens": 300
+            }
+            resp = requests.post(url, headers=headers, json=payload, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                raw_text = data["choices"][0]["message"]["content"].strip()
+        elif config.provider == "ollama":
+            base = config.base_url.rstrip('/') if config.base_url else "http://localhost:11434"
+            url = f"{base}/api/generate"
+            payload = {
+                "model": config.model_name or "llama3.2-vision",
+                "prompt": prompt,
+                "images": [b64_img],
+                "stream": False
+            }
+            resp = requests.post(url, json=payload, timeout=30)
+            if resp.status_code == 200:
+                raw_text = resp.json().get("response", "").strip()
+    except Exception as e:
+        print(f"Error in extract_memory_profile_from_snapshot: {e}")
+
+    # Parse JSON from raw_text
+    if raw_text:
+        clean_text = raw_text
+        if "```" in clean_text:
+            parts = clean_text.split("```")
+            if len(parts) > 1:
+                clean_text = parts[1]
+                if clean_text.startswith("json"):
+                    clean_text = clean_text[4:]
+                clean_text = clean_text.strip()
+        try:
+            parsed = json.loads(clean_text)
+            cat = str(parsed.get("category", "custom")).lower()
+            if cat not in ["courier", "person", "vehicle", "custom"]:
+                cat = "custom"
+            tb = str(parsed.get("threat_bias", "Safe"))
+            if tb not in ["Safe", "Suspicious", "High"]:
+                tb = "Safe"
+            return {
+                "name": str(parsed.get("name", "Recognized Subject")),
+                "category": cat,
+                "cues": str(parsed.get("cues", "Visual cues identified by camera")),
+                "action_note": str(parsed.get("action_note", "")),
+                "threat_bias": tb
+            }
+        except Exception:
+            pass
+
+    return {
+        "name": "Recognized Subject",
+        "category": "custom",
+        "cues": raw_text or "Visual cues identified by camera snapshot",
+        "action_note": "",
+        "threat_bias": "Safe"
+    }

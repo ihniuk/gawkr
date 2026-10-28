@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Play, Download, Camera, Film, Clock, 
-  ShieldCheck, AlertCircle, RefreshCw, Volume2, VolumeX 
+  ShieldCheck, AlertCircle, RefreshCw, Volume2, VolumeX, Brain
 } from 'lucide-react';
 import { api } from '../api/client';
 
-export default function VideoPlaybackModal({ event: initialEvent, onClose }) {
+export default function VideoPlaybackModal({ event: initialEvent, onClose, onAddToMemory }) {
   const [currentEvent, setCurrentEvent] = useState(initialEvent);
   const [activeTab, setActiveTab] = useState(initialEvent?.video_clip_url ? 'video' : 'snapshot');
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
@@ -362,6 +362,17 @@ export default function VideoPlaybackModal({ event: initialEvent, onClose }) {
             >
               <Download size={13} /> Save JPEG
             </a>
+            {onAddToMemory && (
+              <button
+                type="button"
+                className="btn-glass"
+                onClick={() => onAddToMemory(currentEvent)}
+                style={{ fontSize: '0.76rem', padding: '6px 12px', color: '#d8b4fe', borderColor: 'rgba(168, 85, 247, 0.4)' }}
+                title="Teach this snapshot to AI Recognition Memory"
+              >
+                <Brain size={13} style={{ marginRight: '5px' }} /> Add to AI Memory
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -33,6 +33,7 @@ export default function App() {
   const [activeSettingsCamera, setActiveSettingsCamera] = useState(null);
   const [activeTelemetryCamera, setActiveTelemetryCamera] = useState(null);
   const [activePlaybackEvent, setActivePlaybackEvent] = useState(null);
+  const [memoryInitialData, setMemoryInitialData] = useState(null);
   
   // Right Click Context Menu
   const [contextMenu, setContextMenu] = useState({
@@ -412,6 +413,17 @@ export default function App() {
     );
   }
 
+
+  const handleAddToMemoryFromEvent = (evt) => {
+    setActivePlaybackEvent(null);
+    setMemoryInitialData({
+      image_url: evt.snapshot_url,
+      name: evt.ai_description && !evt.ai_description.startsWith('AI') && !evt.ai_description.startsWith('Gemini') ? evt.ai_description.slice(0, 32) : '',
+      threat_bias: evt.threat_level || 'Safe'
+    });
+    setCurrentTab('control_panel');
+  };
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* Top Navbar */}
@@ -452,10 +464,16 @@ export default function App() {
             onPlayEvent={(evt) => setActivePlaybackEvent(evt)}
             onDeleteEvent={handleDeleteEvent}
             onRefreshEvents={loadInitialData}
+            onAddToMemory={handleAddToMemoryFromEvent}
           />
         )}
         {currentTab === 'control_panel' && (
-          <ControlPanel isAdmin={isAdmin} currentUser={user} />
+          <ControlPanel
+            isAdmin={isAdmin}
+            currentUser={user}
+            initialMemoryData={memoryInitialData}
+            onClearInitialMemoryData={() => setMemoryInitialData(null)}
+          />
         )}
         {currentTab === 'briefing' && (
           <DailyBriefingPage isAdmin={isAdmin} />
@@ -533,6 +551,7 @@ export default function App() {
         <VideoPlaybackModal
           event={activePlaybackEvent}
           onClose={() => setActivePlaybackEvent(null)}
+          onAddToMemory={handleAddToMemoryFromEvent}
         />
       )}
 

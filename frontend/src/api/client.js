@@ -313,6 +313,36 @@ export const api = {
     });
   },
 
+  async uploadAIMemoryImage(file) {
+    const token = authStorage.getToken();
+    const formData = new FormData();
+    formData.append('file', file);
+    const headers = {
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+    const response = await fetch(`${API_BASE}/settings/ai-memory/upload-image`, {
+      method: 'POST',
+      headers,
+      body: formData
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || 'Failed to upload image');
+    }
+    return response.json();
+  },
+
+  async extractAIMemoryCues(data) {
+    return apiFetch('/settings/ai-memory/extract-cues', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    });
+  },
+
+  async getRecentMemorySnapshots(limit = 30) {
+    return apiFetch(`/settings/ai-memory/recent-snapshots?limit=${limit}`);
+  },
+
   async testNotification(service, payload) {
     return apiFetch(`/settings/test-notification/${service}`, {
       method: 'POST',

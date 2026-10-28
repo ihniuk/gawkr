@@ -4,12 +4,13 @@ import {
   AlertTriangle, Folder, RefreshCw, Send, Sparkles, 
   Eye, EyeOff, ShieldAlert, Zap, MessageSquare, Radio, Trash2, Video,
   Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X,
-  Brain, Package, Truck, User, Plus, Edit2, Tag, Check, Info
+  Brain, Package, Truck, User, Plus, Edit2, Tag, Check, Info,
+  Camera, Upload, Image as ImageIcon
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
 import { evaluatePasswordStrength } from '../utils/security';
 
-export default function ControlPanel({ isAdmin, currentUser }) {
+export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, onClearInitialMemoryData }) {
   const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'ai_memory', 'notifications', 'users'
   const [settings, setSettings] = useState(null);
   const [diskStats, setDiskStats] = useState(null);
@@ -29,9 +30,15 @@ export default function ControlPanel({ isAdmin, currentUser }) {
     cues: '',
     action_note: '',
     threat_bias: 'Safe',
-    enabled: true
+    enabled: true,
+    image_url: ''
   });
   const [memoryActionFeedback, setMemoryActionFeedback] = useState('');
+  const [isExtractingCues, setIsExtractingCues] = useState(false);
+  const [isUploadingMemoryImage, setIsUploadingMemoryImage] = useState(false);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
+  const [recentSnapshots, setRecentSnapshots] = useState([]);
+  const [isLoadingRecentSnapshots, setIsLoadingRecentSnapshots] = useState(false);
 
   // AI Vision Testing state
   const [isTestingVision, setIsTestingVision] = useState(false);
@@ -410,11 +417,106 @@ export default function ControlPanel({ isAdmin, currentUser }) {
       setMemoryForm({
         id: '',
         ...preset,
-        enabled: true
+        enabled: true,
+        image_url: ''
       });
       setEditingMemoryItem(null);
       setIsEditingMemory(true);
     }
+  };
+
+  useEffect(() => {
+    if (initialMemoryData) {
+      setActiveTab('ai_memory');
+      const targetUrl = initialMemoryData.image_url || '';
+      setMemoryForm({
+        id: '',
+        category: initialMemoryData.category || 'custom',
+        name: initialMemoryData.name || '',
+        cues: initialMemoryData.cues || '',
+        action_note: initialMemoryData.action_note || '',
+        threat_bias: initialMemoryData.threat_bias || 'Safe',
+        enabled: true,
+        image_url: targetUrl
+      });
+      setEditingMemoryItem(null);
+      setIsEditingMemory(true);
+      if (targetUrl && !initialMemoryData.cues) {
+        handleExtractCues(targetUrl);
+      }
+      if (onClearInitialMemoryData) {
+        onClearInitialMemoryData();
+      }
+    }
+  }, [initialMemoryData]);
+
+  const handleExtractCues = async (snapshotPath) => {
+    const targetPath = snapshotPath || memoryForm.image_url;
+    if (!targetPath) return;
+
+    setIsExtractingCues(true);
+    try {
+      const profile = await api.extractAIMemoryCues({ snapshot_path: targetPath });
+      setMemoryForm(prev => ({
+        ...prev,
+        name: prev.name && prev.name !== 'Recognized Subject' ? prev.name : (profile.name || prev.name || 'Recognized Subject'),
+        category: profile.category || prev.category || 'custom',
+        cues: profile.cues || prev.cues,
+        action_note: profile.action_note || prev.action_note,
+        threat_bias: profile.threat_bias || prev.threat_bias || 'Safe'
+      }));
+      setMemoryActionFeedback('✨ AI Vision analyzed snapshot and extracted visual identifying cues!');
+      setTimeout(() => setMemoryActionFeedback(''), 4000);
+    } catch (err) {
+      console.error('Failed to extract cues from snapshot:', err);
+      alert('Could not extract cues: ' + (err.message || err));
+    } finally {
+      setIsExtractingCues(false);
+    }
+  };
+
+  const handleImageFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingMemoryImage(true);
+    try {
+      const res = await api.uploadAIMemoryImage(file);
+      setMemoryForm(prev => ({
+        ...prev,
+        image_url: res.snapshot_url
+      }));
+      await handleExtractCues(res.snapshot_url);
+    } catch (err) {
+      console.error('Failed to upload image:', err);
+      alert('Failed to upload image: ' + (err.message || err));
+    } finally {
+      setIsUploadingMemoryImage(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleOpenSnapshotPicker = async () => {
+    setIsLoadingRecentSnapshots(true);
+    setIsPickerOpen(true);
+    try {
+      const res = await api.getRecentMemorySnapshots(30);
+      setRecentSnapshots(res.snapshots || []);
+    } catch (err) {
+      console.error('Failed to load recent snapshots:', err);
+    } finally {
+      setIsLoadingRecentSnapshots(false);
+    }
+  };
+
+  const handleSelectRecentSnapshot = async (snapshot) => {
+    setIsPickerOpen(false);
+    setMemoryForm(prev => ({
+      ...prev,
+      image_url: snapshot.snapshot_url,
+      name: prev.name || (snapshot.ai_description && !snapshot.ai_description.startsWith('AI') ? snapshot.ai_description.slice(0, 32) : '')
+    }));
+    await handleExtractCues(snapshot.snapshot_url);
   };
 
   const handleOpenAddCustomMemory = () => {
@@ -425,7 +527,8 @@ export default function ControlPanel({ isAdmin, currentUser }) {
       cues: '',
       action_note: '',
       threat_bias: 'Safe',
-      enabled: true
+      enabled: true,
+      image_url: ''
     });
     setEditingMemoryItem(null);
     setIsEditingMemory(true);
@@ -439,7 +542,8 @@ export default function ControlPanel({ isAdmin, currentUser }) {
       cues: item.cues || '',
       action_note: item.action_note || '',
       threat_bias: item.threat_bias || 'Safe',
-      enabled: item.enabled ?? true
+      enabled: item.enabled ?? true,
+      image_url: item.image_url || ''
     });
     setEditingMemoryItem(item);
     setIsEditingMemory(true);
@@ -1835,6 +1939,25 @@ export default function ControlPanel({ isAdmin, currentUser }) {
                         )}
                       </div>
 
+                      {/* Optional Reference Snapshot */}
+                      {item.image_url && (
+                        <div style={{
+                          width: '100%',
+                          height: '110px',
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          marginBottom: '10px',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          background: '#000'
+                        }}>
+                          <img
+                            src={item.image_url}
+                            alt={item.name}
+                            style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                          />
+                        </div>
+                      )}
+
                       {/* Entity Name */}
                       <h4 style={{ fontSize: '0.98rem', fontWeight: 800, marginBottom: '8px', color: '#fff' }}>
                         {item.name}
@@ -1957,6 +2080,104 @@ export default function ControlPanel({ isAdmin, currentUser }) {
             </div>
 
             <form onSubmit={handleSaveMemoryItem} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {/* Snapshot Reference & Auto-Learn */}
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '10px',
+                padding: '12px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Camera size={14} color="var(--accent-cyan)" />
+                    <span>Reference Snapshot & AI Auto-Learn</span>
+                  </label>
+                  {memoryForm.image_url && (
+                    <button
+                      type="button"
+                      className="btn-glass"
+                      style={{ fontSize: '0.7rem', padding: '2px 8px', color: '#fb7185' }}
+                      onClick={() => setMemoryForm(prev => ({ ...prev, image_url: '' }))}
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+
+                {memoryForm.image_url ? (
+                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                    <div style={{
+                      width: '100px',
+                      height: '68px',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      border: '1px solid rgba(255, 255, 255, 0.15)',
+                      background: '#000',
+                      flexShrink: 0
+                    }}>
+                      <img
+                        src={memoryForm.image_url}
+                        alt="Reference Snapshot"
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {memoryForm.image_url.split('/').pop()}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        onClick={() => handleExtractCues(memoryForm.image_url)}
+                        disabled={isExtractingCues}
+                        style={{
+                          fontSize: '0.76rem',
+                          padding: '6px 10px',
+                          background: 'rgba(168, 85, 247, 0.2)',
+                          borderColor: 'rgba(168, 85, 247, 0.4)',
+                          color: '#d8b4fe',
+                          fontWeight: 700,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px'
+                        }}
+                      >
+                        <Sparkles size={13} className={isExtractingCues ? 'animate-spin' : ''} />
+                        {isExtractingCues ? 'Analyzing Snapshot with AI...' : 'Auto-Extract Cues with AI'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                      Pick a camera snapshot or upload an image. The AI will inspect it and automatically extract visual identifying cues for you.
+                    </p>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        onClick={handleOpenSnapshotPicker}
+                        style={{ fontSize: '0.76rem', padding: '6px 12px', flex: '1 1 140px' }}
+                      >
+                        <Camera size={13} style={{ marginRight: '6px' }} /> Pick from Camera Events
+                      </button>
+
+                      <label className="btn-glass" style={{ fontSize: '0.76rem', padding: '6px 12px', flex: '1 1 120px', cursor: 'pointer', textAlign: 'center' }}>
+                        <Upload size={13} style={{ marginRight: '6px' }} />
+                        {isUploadingMemoryImage ? 'Uploading...' : 'Upload Image'}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          style={{ display: 'none' }}
+                          onChange={handleImageFileUpload}
+                          disabled={isUploadingMemoryImage}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Category */}
               <div>
                 <label style={{ display: 'block', fontSize: '0.78rem', fontWeight: 700, marginBottom: '4px' }}>
@@ -2075,6 +2296,80 @@ export default function ControlPanel({ isAdmin, currentUser }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ----------------- RECENT SNAPSHOT PICKER MODAL ----------------- */}
+      {isPickerOpen && (
+        <div className="modal-overlay" onClick={() => setIsPickerOpen(false)} style={{ zIndex: 1200 }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '640px', width: '94%', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Camera size={18} color="var(--accent-cyan)" />
+                <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Choose Snapshot from Camera Events</h3>
+              </div>
+              <button className="btn-glass" onClick={() => setIsPickerOpen(false)} style={{ padding: '6px' }}>
+                <X size={15} />
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '12px' }}>
+              Click on any captured frame to use as the visual reference and automatically extract visual identifying cues.
+            </p>
+
+            {isLoadingRecentSnapshots ? (
+              <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                <RefreshCw size={20} className="animate-spin" style={{ margin: '0 auto 8px auto' }} />
+                <span>Loading recent camera snapshots...</span>
+              </div>
+            ) : recentSnapshots.length === 0 ? (
+              <div style={{ padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                <span>No camera event snapshots recorded yet.</span>
+              </div>
+            ) : (
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))',
+                gap: '10px',
+                overflowY: 'auto',
+                maxHeight: '440px',
+                paddingRight: '4px'
+              }}>
+                {recentSnapshots.map((snap, idx) => (
+                  <div
+                    key={idx}
+                    onClick={() => handleSelectRecentSnapshot(snap)}
+                    style={{
+                      cursor: 'pointer',
+                      borderRadius: '8px',
+                      overflow: 'hidden',
+                      border: '1px solid rgba(255, 255, 255, 0.12)',
+                      background: 'rgba(0, 0, 0, 0.4)',
+                      transition: 'transform 0.15s ease, border-color 0.15s ease'
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.borderColor = 'var(--accent-cyan)'}
+                    onMouseLeave={(e) => e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.12)'}
+                  >
+                    <div style={{ width: '100%', height: '85px', background: '#000' }}>
+                      <img
+                        src={snap.snapshot_url}
+                        alt="Event Snapshot"
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                    </div>
+                    <div style={{ padding: '6px', fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                      <span style={{ fontWeight: 700, color: '#fff', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {snap.camera_name || 'Camera'}
+                      </span>
+                      <span style={{ fontSize: '0.64rem', opacity: 0.7 }}>
+                        {snap.timestamp ? new Date(snap.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
