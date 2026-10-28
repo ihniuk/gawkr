@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Bell, X, ShieldAlert, Clock, Video, ExternalLink, Trash2, Smartphone } from 'lucide-react';
 
 export default function EventDrawer({ isOpen, onClose, events, onSelectEvent, onClearEvents }) {
+  const [showIosModal, setShowIosModal] = useState(false);
   if (!isOpen) return null;
 
   return (
@@ -57,6 +58,26 @@ export default function EventDrawer({ isOpen, onClose, events, onSelectEvent, on
             <Smartphone size={13} />
             <span>APK</span>
           </a>
+          <button
+            type="button"
+            className="btn-glass"
+            title="Install Gawkr on iOS (iPhone / iPad)"
+            onClick={() => setShowIosModal(true)}
+            style={{
+              padding: '6px 10px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '5px',
+              fontSize: '0.78rem',
+              color: '#38bdf8',
+              borderColor: 'rgba(56, 189, 248, 0.35)',
+              background: 'rgba(56, 189, 248, 0.08)',
+              cursor: 'pointer'
+            }}
+          >
+            <Smartphone size={13} />
+            <span>iOS</span>
+          </button>
           <button
             className="btn-glass"
             onClick={onClearEvents}
@@ -187,6 +208,67 @@ export default function EventDrawer({ isOpen, onClose, events, onSelectEvent, on
           })
         )}
       </div>
+
+      {/* iOS Installation Guide Modal */}
+      {showIosModal && (
+        <div className="modal-overlay" onClick={() => setShowIosModal(false)} style={{ zIndex: 1300 }}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '420px', width: '92%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '8px',
+                  background: 'rgba(56, 189, 248, 0.15)',
+                  border: '1px solid rgba(56, 189, 248, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#38bdf8'
+                }}>
+                  <Smartphone size={18} />
+                </div>
+                <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Install Gawkr on iPhone / iPad</h3>
+              </div>
+              <button className="btn-glass" onClick={() => setShowIosModal(false)} style={{ padding: '6px' }}>
+                <X size={15} />
+              </button>
+            </div>
+
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '14px', lineHeight: '1.4' }}>
+              Apple blocks downloading raw installer files (.ipa) directly from websites like Android does, but Gawkr can be installed directly from Safari with <strong>full-screen standalone app mode</strong> and <strong>lockscreen push notifications</strong>:
+            </p>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', background: 'rgba(255, 255, 255, 0.03)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                <span style={{ background: 'var(--accent-cyan)', color: '#000', width: '20px', height: '20px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', fontWeight: 800, flexShrink: 0 }}>1</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>Open this Gawkr address in <strong>Safari</strong> on your iPhone or iPad.</span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', background: 'rgba(255, 255, 255, 0.03)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                <span style={{ background: 'var(--accent-cyan)', color: '#000', width: '20px', height: '20px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', fontWeight: 800, flexShrink: 0 }}>2</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>Tap the <strong>Share</strong> button <span style={{ fontSize: '0.9rem' }}>⎋</span> (the square with an arrow pointing up at the bottom toolbar).</span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', background: 'rgba(255, 255, 255, 0.03)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                <span style={{ background: 'var(--accent-cyan)', color: '#000', width: '20px', height: '20px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', fontWeight: 800, flexShrink: 0 }}>3</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>Scroll down and tap <strong>"Add to Home Screen"</strong>, then tap <strong>Add</strong> in the top-right.</span>
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', background: 'rgba(255, 255, 255, 0.03)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                <span style={{ background: 'var(--accent-cyan)', color: '#000', width: '20px', height: '20px', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.72rem', fontWeight: 800, flexShrink: 0 }}>4</span>
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-main)' }}>Tap <strong>Gawkr</strong> on your Home Screen — it launches as a full-screen app with lockscreen notifications enabled (iOS 16.4+).</span>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn-primary" onClick={() => setShowIosModal(false)} style={{ fontSize: '0.82rem', padding: '6px 16px' }}>
+                Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
