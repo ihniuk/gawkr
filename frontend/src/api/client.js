@@ -364,5 +364,31 @@ export const api = {
     return apiFetch('/briefing/generate', {
       method: 'POST'
     });
+  },
+
+  // System Logs & Security Audit
+  async getSystemLogs({ level = 'ALL', component = 'ALL', search = '', limit = 250 } = {}) {
+    const params = new URLSearchParams();
+    if (level) params.append('level', level);
+    if (component) params.append('component', component);
+    if (search) params.append('search', search);
+    if (limit) params.append('limit', limit);
+    return apiFetch(`/system/logs?${params.toString()}`);
+  },
+
+  async clearSystemLogs() {
+    return apiFetch('/system/logs/clear', {
+      method: 'POST'
+    });
+  },
+
+  async getLoginAudit(limit = 100) {
+    return apiFetch(`/security/login-audit?limit=${limit}`);
+  },
+
+  async clearLoginAudit() {
+    return apiFetch('/security/login-audit/clear', {
+      method: 'POST'
+    });
   }
 };

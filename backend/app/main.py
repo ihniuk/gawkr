@@ -6,7 +6,7 @@ from typing import Optional, List, Dict, Any
 from contextlib import asynccontextmanager
 from pathlib import Path
 from pydantic import BaseModel
-from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect, UploadFile, File, Request
 from fastapi.responses import StreamingResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -29,16 +29,22 @@ from app.camera_manager import camera_manager
 from app.notifications import notification_manager
 from app.storage import (
     load_recent_events_from_db, delete_event_from_db,
-    get_system_settings, save_system_settings, get_storage_disk_stats
+    get_system_settings, save_system_settings, get_storage_disk_stats,
+    record_login_audit, get_login_audit_logs, clear_login_audit_logs
 )
 from app.ai_vision import test_ai_vision_connection, extract_memory_profile_from_snapshot
 from app.notification_dispatchers import (
     send_telegram_alert, send_discord_alert, send_slack_alert, send_pushover_alert
 )
 from app.hardware import detect_hardware_capabilities
+from app.logger import setup_app_logging, get_system_logs, clear_system_logs, logger
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize unified system logging & log database
+    setup_app_logging()
+    logger.info("Gawkr AI-NVR Server starting up...", component="system")
+
     # Startup: Initialize camera manager with the active event loop
     loop = asyncio.get_running_loop()
     camera_manager.initialize(loop)
@@ -59,13 +65,14 @@ async def lifespan(app: FastAPI):
             try:
                 purge_expired_storage()
             except Exception as e:
-                print(f"Storage retention worker error: {e}")
+                logger.error(f"Storage retention worker error: {e}", component="storage")
             await asyncio.sleep(1800) # Check every 30 minutes
     
     task = asyncio.create_task(telemetry_loop())
     storage_task = asyncio.create_task(storage_retention_loop())
     yield
     # Shutdown
+    logger.info("Gawkr AI-NVR Server shutting down...", component="system")
     task.cancel()
     storage_task.cancel()
     camera_manager.shutdown()
@@ -83,14 +90,33 @@ app.add_middleware(
 
 # ----------------- AUTHENTICATION -----------------
 
+def extract_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    if request.client:
+        return request.client.host
+    return "127.0.0.1"
+
 @app.post("/api/auth/login", response_model=UserResponse)
-async def login(credentials: UserLogin):
+async def login(credentials: UserLogin, request: Request):
+    client_ip = extract_client_ip(request)
+    user_agent = request.headers.get("user-agent", "Unknown")
+
     user = authenticate_user(credentials.username, credentials.password)
     if not user:
+        record_login_audit(credentials.username, client_ip, user_agent, "FAILED", "Incorrect username or password")
+        logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} ({user_agent[:45]})", component="auth")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password"
         )
+
+    record_login_audit(credentials.username, client_ip, user_agent, "SUCCESS")
+    logger.info(f"Successful login for user '{credentials.username}' from {client_ip}", component="auth")
     token = create_access_token({"sub": user["username"], "role": user["role"]})
     return UserResponse(
         username=user["username"],
@@ -318,14 +344,14 @@ async def test_stream(req: TestStreamRequest, user: dict = Depends(require_admin
 
 @app.get("/api/events")
 async def get_events(
-    limit: int = 150,
+    limit: int = 500,
     camera_id: str = None,
     start_time: float = None,
     end_time: float = None,
     user: dict = Depends(get_current_user)
 ):
     return load_recent_events_from_db(
-        limit=limit,
+        limit=min(limit, 2500),
         camera_id=camera_id,
         start_time=start_time,
         end_time=end_time
@@ -525,6 +551,51 @@ async def trigger_storage_purge(user: dict = Depends(require_admin)):
     from app.storage import purge_expired_storage
     res = purge_expired_storage()
     return {"status": "ok", "result": res}
+
+# ----------------- SYSTEM LOGS & AUDIT -----------------
+
+@app.get("/api/system/logs")
+async def get_logs_endpoint(
+    level: str = "ALL",
+    component: str = "ALL",
+    search: str = "",
+    limit: int = 250,
+    user: dict = Depends(require_admin)
+):
+    """Returns system logs with severity and component filtering."""
+    logs = get_system_logs(level=level, component=component, search=search, limit=limit)
+    return {"count": len(logs), "logs": logs}
+
+@app.post("/api/system/logs/clear")
+async def clear_logs_endpoint(user: dict = Depends(require_admin)):
+    """Clears system logs from database and memory."""
+    clear_system_logs()
+    logger.info(f"System logs cleared by user '{user['username']}'", component="system")
+    return {"status": "cleared"}
+
+@app.get("/api/security/login-audit")
+async def get_login_audit_endpoint(limit: int = 100, user: dict = Depends(require_admin)):
+    """Retrieves security audit logs of authentication attempts."""
+    logs = get_login_audit_logs(limit=limit)
+    now = time.time()
+    past_24h = now - 86400
+    failed_24h = sum(1 for l in logs if l.get("status") == "FAILED" and l.get("timestamp", 0) >= past_24h)
+    success_24h = sum(1 for l in logs if l.get("status") == "SUCCESS" and l.get("timestamp", 0) >= past_24h)
+    return {
+        "stats": {
+            "total_recorded": len(logs),
+            "failed_attempts_24h": failed_24h,
+            "successful_logins_24h": success_24h
+        },
+        "audit_logs": logs
+    }
+
+@app.post("/api/security/login-audit/clear")
+async def clear_login_audit_endpoint(user: dict = Depends(require_admin)):
+    """Clears authentication security audit trail."""
+    clear_login_audit_logs()
+    logger.info(f"Security login audit trail cleared by user '{user['username']}'", component="security")
+    return {"status": "cleared"}
 
 # ----------------- DAILY AI BRIEFING -----------------
 

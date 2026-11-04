@@ -60,6 +60,8 @@ public class MainActivity extends AppCompatActivity {
         public String getRole() { return role; }
         @android.webkit.JavascriptInterface
         public boolean isAndroidApp() { return true; }
+        @android.webkit.JavascriptInterface
+        public String getSavedPassword() { return prefs != null ? prefs.getString("password", "") : ""; }
     }
 
     @Override

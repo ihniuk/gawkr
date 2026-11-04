@@ -4,6 +4,7 @@ import time
 import shutil
 import os
 import hashlib
+import uuid
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import cv2
@@ -99,6 +100,20 @@ def init_db():
         cursor.execute("INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
                        (DEFAULT_VIEWER_USER, viewer_hash, "viewer", now))
     
+    # Login Security Audit table
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS login_audit (
+        id TEXT PRIMARY KEY,
+        timestamp REAL NOT NULL,
+        username TEXT NOT NULL,
+        ip_address TEXT NOT NULL,
+        user_agent TEXT NOT NULL,
+        status TEXT NOT NULL,
+        failure_reason TEXT
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_login_timestamp ON login_audit(timestamp);")
+
     conn.commit()
     conn.close()
 
@@ -174,7 +189,7 @@ def save_event_to_db(event: DetectionEvent):
     conn.close()
 
 def load_recent_events_from_db(
-    limit: int = 150,
+    limit: int = 500,
     camera_id: Optional[str] = None,
     start_time: Optional[float] = None,
     end_time: Optional[float] = None
@@ -519,5 +534,58 @@ def count_admin_users() -> int:
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+# ----------------- LOGIN AUDIT -----------------
+
+def record_login_audit(
+    username: str,
+    ip_address: str,
+    user_agent: str,
+    status: str,
+    failure_reason: Optional[str] = None
+):
+    """Logs an authentication attempt for security monitoring and audit trails."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    audit_id = f"aud_{uuid.uuid4().hex[:10]}"
+    cursor.execute("""
+    INSERT INTO login_audit (id, timestamp, username, ip_address, user_agent, status, failure_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (audit_id, time.time(), username, ip_address, user_agent, status, failure_reason or ""))
+    conn.commit()
+    conn.close()
+
+def get_login_audit_logs(limit: int = 100) -> List[Dict[str, Any]]:
+    """Retrieves recent login events (success & failed attempts)."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, timestamp, username, ip_address, user_agent, status, failure_reason
+    FROM login_audit
+    ORDER BY timestamp DESC
+    LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0],
+            "timestamp": r[1],
+            "username": r[2],
+            "ip_address": r[3],
+            "user_agent": r[4],
+            "status": r[5],
+            "failure_reason": r[6]
+        }
+        for r in rows
+    ]
+
+def clear_login_audit_logs():
+    """Purges security login audit logs."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM login_audit;")
+    conn.commit()
+    conn.close()
 
 init_db()

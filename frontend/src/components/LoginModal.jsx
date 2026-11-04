@@ -5,8 +5,29 @@ import { evaluatePasswordStrength } from '../utils/security';
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
   const [activeTab, setActiveTab] = useState('login'); // 'login' | 'reset'
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin123');
+  const [savedCreds, setSavedCreds] = useState(() => {
+    try {
+      const s = localStorage.getItem('gawkr_saved_creds');
+      return s ? JSON.parse(s) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [username, setUsername] = useState(() => {
+    try {
+      const s = localStorage.getItem('gawkr_saved_creds');
+      if (s) return JSON.parse(s).username || 'admin';
+    } catch {}
+    return 'admin';
+  });
+  const [password, setPassword] = useState(() => {
+    try {
+      const s = localStorage.getItem('gawkr_saved_creds');
+      if (s) return JSON.parse(s).password || '';
+    } catch {}
+    return '';
+  });
+  const [rememberMe, setRememberMe] = useState(true);
   
   // Password change state
   const [changeUsername, setChangeUsername] = useState('admin');
@@ -27,6 +48,9 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
     setSuccessMsg('');
     try {
       const res = await api.login(username, password);
+      if (rememberMe) {
+        localStorage.setItem('gawkr_saved_creds', JSON.stringify({ username, password }));
+      }
       onLoginSuccess(res);
       onClose();
     } catch (err) {
@@ -184,9 +208,12 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
           <>
             <form onSubmit={handleSubmit}>
               <div style={{ marginBottom: '12px' }}>
-                <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Username</label>
+                <label htmlFor="modal_username" style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Username</label>
                 <input
+                  id="modal_username"
+                  name="username"
                   type="text"
+                  autoComplete="username"
                   className="glass-input"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -194,16 +221,37 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
                 />
               </div>
 
-              <div style={{ marginBottom: '16px' }}>
-                <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Password</label>
+              <div style={{ marginBottom: '14px' }}>
+                <label htmlFor="modal_password" style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>Password</label>
                 <input
+                  id="modal_password"
+                  name="password"
                   type="password"
+                  autoComplete="current-password"
                   className="glass-input"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
                 />
               </div>
+
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                cursor: 'pointer',
+                marginBottom: '14px',
+                fontSize: '0.76rem',
+                color: 'var(--text-muted)'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  style={{ accentColor: 'var(--accent-cyan)' }}
+                />
+                <span>Remember password for quick login</span>
+              </label>
 
               <button
                 type="submit"

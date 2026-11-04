@@ -14,7 +14,7 @@ import ControlPanel from './components/ControlPanel';
 import DailyBriefingPage from './components/DailyBriefingPage';
 import { api, authStorage } from './api/client';
 import { NvrWebSocket } from './api/ws';
-import { ShieldAlert, CheckCircle, Bell, X, Shield, Lock, Smartphone } from 'lucide-react';
+import { ShieldAlert, CheckCircle, Bell, X, Shield, Lock, Smartphone, Zap } from 'lucide-react';
 
 export default function App() {
   const [user, setUser] = useState(() => authStorage.getUser());
@@ -58,7 +58,7 @@ export default function App() {
       const camList = await api.getCameras();
       setCameras(camList);
 
-      const recentEvents = await api.getEvents(50);
+      const recentEvents = await api.getEvents(250);
       setEvents(recentEvents);
       const clearedAt = Number(localStorage.getItem('nvr_drawer_cleared_at') || 0);
       setDrawerAlerts(recentEvents.filter(e => (e.timestamp * 1000) > clearedAt));
@@ -102,8 +102,34 @@ export default function App() {
 
     loadInitialData();
 
-    // Listen for auth expiration
-    const handleAuthExpired = () => {
+    // Listen for auth expiration with seamless silent re-auth
+    const handleAuthExpired = async () => {
+      // 1. Check native Android bridge for saved password
+      if (typeof window !== 'undefined' && window.GawkrBridge && typeof window.GawkrBridge.getSavedPassword === 'function') {
+        try {
+          const u = window.GawkrBridge.getUsername() || 'admin';
+          const p = window.GawkrBridge.getSavedPassword();
+          if (p) {
+            const res = await api.login(u, p);
+            setUser({ username: res.username, role: res.role });
+            loadInitialData();
+            return;
+          }
+        } catch (e) {}
+      }
+      // 2. Check localStorage saved credentials
+      try {
+        const saved = localStorage.getItem('gawkr_saved_creds');
+        if (saved) {
+          const { username, password } = JSON.parse(saved);
+          if (username && password) {
+            const res = await api.login(username, password);
+            setUser({ username: res.username, role: res.role });
+            loadInitialData();
+            return;
+          }
+        }
+      } catch (e) {}
       setUser(null);
       setIsLoginOpen(true);
     };
@@ -263,22 +289,53 @@ export default function App() {
   const handleTabChange = (newTab) => {
     setCurrentTab(newTab);
     if (newTab === 'clips') {
-      api.getEvents(50).then(evts => setEvents(evts)).catch(() => {});
+      api.getEvents(250).then(evts => setEvents(evts)).catch(() => {});
     }
   };
 
-  // State for standalone login screen
-  const [loginUsername, setLoginUsername] = useState('admin');
-  const [loginPassword, setLoginPassword] = useState('');
+  // State for standalone login screen with Save Password / Quick Login
+  const [savedCreds, setSavedCreds] = useState(() => {
+    try {
+      const s = localStorage.getItem('gawkr_saved_creds');
+      return s ? JSON.parse(s) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [rememberMe, setRememberMe] = useState(true);
+  const [loginUsername, setLoginUsername] = useState(() => {
+    try {
+      const s = localStorage.getItem('gawkr_saved_creds');
+      if (s) return JSON.parse(s).username || 'admin';
+    } catch {}
+    return 'admin';
+  });
+  const [loginPassword, setLoginPassword] = useState(() => {
+    try {
+      const s = localStorage.getItem('gawkr_saved_creds');
+      if (s) return JSON.parse(s).password || '';
+    } catch {}
+    return '';
+  });
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  const handleInlineLogin = async (e) => {
+  const handleInlineLogin = async (e, customUser, customPass) => {
     if (e) e.preventDefault();
+    const u = customUser || loginUsername;
+    const p = customPass !== undefined ? customPass : loginPassword;
+
     setIsLoggingIn(true);
     setLoginError('');
     try {
-      const res = await api.login(loginUsername, loginPassword);
+      const res = await api.login(u, p);
+      if (rememberMe) {
+        localStorage.setItem('gawkr_saved_creds', JSON.stringify({ username: u, password: p }));
+        setSavedCreds({ username: u, password: p });
+      } else {
+        localStorage.removeItem('gawkr_saved_creds');
+        setSavedCreds(null);
+      }
       setUser({ username: res.username, role: res.role });
       loadInitialData();
     } catch (err) {
@@ -345,14 +402,71 @@ export default function App() {
             </p>
           </div>
 
+          {/* Quick Sign In Shortcut if Saved Credentials Exist */}
+          {savedCreds && (
+            <div style={{
+              marginBottom: '18px',
+              padding: '12px 14px',
+              background: 'rgba(6, 182, 212, 0.1)',
+              border: '1px solid rgba(6, 182, 212, 0.25)',
+              borderRadius: '10px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '8px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--accent-cyan)' }}>
+                  Saved Login Found
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    localStorage.removeItem('gawkr_saved_creds');
+                    setSavedCreds(null);
+                    setLoginPassword('');
+                  }}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.70rem',
+                    cursor: 'pointer',
+                    textDecoration: 'underline'
+                  }}
+                >
+                  Forget
+                </button>
+              </div>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={isLoggingIn}
+                onClick={() => handleInlineLogin(null, savedCreds.username, savedCreds.password)}
+                style={{
+                  width: '100%',
+                  padding: '9px',
+                  fontSize: '0.84rem',
+                  fontWeight: 700,
+                  justifyContent: 'center',
+                  background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.8) 0%, rgba(16, 185, 129, 0.8) 100%)'
+                }}
+              >
+                <Zap size={14} /> Quick Sign In as @{savedCreds.username}
+              </button>
+            </div>
+          )}
+
           {/* Login Form */}
           <form onSubmit={handleInlineLogin}>
             <div style={{ marginBottom: '14px' }}>
-              <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+              <label htmlFor="login_username" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
                 USERNAME
               </label>
               <input
+                id="login_username"
+                name="username"
                 type="text"
+                autoComplete="username"
                 className="glass-input"
                 style={{ width: '100%', padding: '10px 14px', fontSize: '0.88rem' }}
                 placeholder="admin"
@@ -362,12 +476,15 @@ export default function App() {
               />
             </div>
 
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
+            <div style={{ marginBottom: '14px' }}>
+              <label htmlFor="login_password" style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', fontWeight: 600 }}>
                 PASSWORD
               </label>
               <input
+                id="login_password"
+                name="password"
                 type="password"
+                autoComplete="current-password"
                 className="glass-input"
                 style={{ width: '100%', padding: '10px 14px', fontSize: '0.88rem' }}
                 placeholder="••••••••"
@@ -376,6 +493,25 @@ export default function App() {
                 required
               />
             </div>
+
+            {/* Remember Me / Save Password */}
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              cursor: 'pointer',
+              marginBottom: '16px',
+              fontSize: '0.78rem',
+              color: 'var(--text-muted)'
+            }}>
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                style={{ accentColor: 'var(--accent-cyan)' }}
+              />
+              <span>Remember login on this device</span>
+            </label>
 
             {loginError && (
               <div style={{

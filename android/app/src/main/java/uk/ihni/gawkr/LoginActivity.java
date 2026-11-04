@@ -55,6 +55,7 @@ public class LoginActivity extends AppCompatActivity {
         // Pre-fill existing credentials if previously saved
         String savedServer = prefs.getString("server_url", "");
         String savedUser = prefs.getString("username", "");
+        String savedPassword = prefs.getString("password", "");
         String savedRole = prefs.getString("role", "admin");
         String savedToken = prefs.getString("token", "");
 
@@ -63,6 +64,9 @@ public class LoginActivity extends AppCompatActivity {
         }
         if (!savedUser.isEmpty()) {
             etUsername.setText(savedUser);
+        }
+        if (!savedPassword.isEmpty()) {
+            etPassword.setText(savedPassword);
         }
 
         // Check if intent specifies forced re-login
@@ -135,6 +139,7 @@ public class LoginActivity extends AppCompatActivity {
                             prefs.edit()
                                     .putString("server_url", serverUrl)
                                     .putString("username", respUsername)
+                                    .putString("password", password)
                                     .putString("role", role)
                                     .putString("token", token)
                                     .commit();

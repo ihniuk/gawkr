@@ -4,6 +4,7 @@ import {
   Download, Play, Trash2, Camera, Search, ChevronRight, 
   Layers, CheckCircle, Eye, RefreshCw, Sparkles, Brain
 } from 'lucide-react';
+import { api } from '../api/client';
 
 export default function ClipReviewPage({
   events,
@@ -17,42 +18,63 @@ export default function ClipReviewPage({
   const [viewMode, setViewMode] = useState('mosaic'); // 'mosaic', 'timeline', 'list'
   const [selectedCameraId, setSelectedCameraId] = useState('all');
   const [selectedClass, setSelectedClass] = useState('all');
-  const [selectedDateFilter, setSelectedDateFilter] = useState('today'); // 'today', 'yesterday', 'all'
+  const [selectedDateFilter, setSelectedDateFilter] = useState('7days'); // 'today', 'yesterday', '7days', '21days', 'all'
+  const [eventLimit, setEventLimit] = useState(250);
+  const [archiveEvents, setArchiveEvents] = useState(events || []);
+  const [isLoadingArchive, setIsLoadingArchive] = useState(false);
   const [hoveredEvent, setHoveredEvent] = useState(null);
   const [timelineCursor, setTimelineCursor] = useState(null);
 
-  // Automatically refresh event metadata on page open to ensure all finalized MP4 clips are loaded
-  useEffect(() => {
-    if (onRefreshEvents) {
-      onRefreshEvents();
-    }
-  }, []);
+  const loadArchiveEvents = async () => {
+    setIsLoadingArchive(true);
+    try {
+      const now = Date.now() / 1000;
+      const todayStart = new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000;
+      let startTime = null;
+      let endTime = null;
 
-  // Filter events based on selections
-  const filteredEvents = useMemo(() => {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
-    const yesterdayStart = todayStart - 86400;
-
-    return events.filter(evt => {
-      // Camera filter
-      if (selectedCameraId !== 'all' && evt.camera_id !== selectedCameraId) {
-        return false;
+      if (selectedDateFilter === 'today') {
+        startTime = todayStart;
+      } else if (selectedDateFilter === 'yesterday') {
+        startTime = todayStart - 86400;
+        endTime = todayStart;
+      } else if (selectedDateFilter === '7days') {
+        startTime = now - (7 * 86400);
+      } else if (selectedDateFilter === '21days') {
+        startTime = now - (21 * 86400);
       }
+
+      const camId = selectedCameraId !== 'all' ? selectedCameraId : null;
+      const fetched = await api.getEvents(eventLimit, camId, startTime, endTime);
+      setArchiveEvents(fetched || []);
+    } catch (err) {
+      console.error('Failed to load archive events:', err);
+    } finally {
+      setIsLoadingArchive(false);
+    }
+  };
+
+  useEffect(() => {
+    loadArchiveEvents();
+  }, [selectedDateFilter, selectedCameraId, eventLimit]);
+
+  useEffect(() => {
+    if (events && events.length > 0 && archiveEvents.length === 0) {
+      setArchiveEvents(events);
+    }
+  }, [events]);
+
+  // Filter events based on class
+  const filteredEvents = useMemo(() => {
+    return archiveEvents.filter(evt => {
       // Class filter
       if (selectedClass !== 'all') {
         const hasClass = evt.objects?.some(o => o.label.toLowerCase() === selectedClass.toLowerCase());
         if (!hasClass) return false;
       }
-      // Date filter
-      if (selectedDateFilter === 'today') {
-        if (evt.timestamp < todayStart) return false;
-      } else if (selectedDateFilter === 'yesterday') {
-        if (evt.timestamp < yesterdayStart || evt.timestamp >= todayStart) return false;
-      }
       return true;
     });
-  }, [events, selectedCameraId, selectedClass, selectedDateFilter]);
+  }, [archiveEvents, selectedClass]);
 
   // Group events by date & hour for the mosaic view
   const groupedEvents = useMemo(() => {
@@ -195,11 +217,13 @@ export default function ClipReviewPage({
           {/* Date Range Selector */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Period:</span>
-            <div style={{ display: 'flex', gap: '4px' }}>
+            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
               {[
                 { id: 'today', label: 'Today' },
                 { id: 'yesterday', label: 'Yesterday' },
-                { id: 'all', label: 'All' }
+                { id: '7days', label: '7 Days' },
+                { id: '21days', label: '21 Days' },
+                { id: 'all', label: 'All History' }
               ].map(d => (
                 <button
                   key={d.id}
@@ -218,11 +242,35 @@ export default function ClipReviewPage({
               ))}
             </div>
           </div>
+
+          {/* Fetch Limit Selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>Fetch Max:</span>
+            <select
+              value={eventLimit}
+              onChange={(e) => setEventLimit(Number(e.target.value))}
+              className="glass-input"
+              style={{ width: 'auto', padding: '5px 8px', fontSize: '0.78rem' }}
+            >
+              <option value={50}>50 clips</option>
+              <option value={100}>100 clips</option>
+              <option value={250}>250 clips</option>
+              <option value={500}>500 clips</option>
+              <option value={1000}>1,000 clips</option>
+              <option value={2500}>2,500 clips</option>
+            </select>
+          </div>
         </div>
 
         {/* Refresh Button */}
-        <button className="btn-glass" onClick={onRefreshEvents} style={{ fontSize: '0.76rem', padding: '6px 12px' }}>
-          <RefreshCw size={13} /> Refresh
+        <button 
+          className="btn-glass" 
+          onClick={() => { loadArchiveEvents(); onRefreshEvents?.(); }} 
+          style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+          disabled={isLoadingArchive}
+        >
+          <RefreshCw size={13} className={isLoadingArchive ? 'animate-spin' : ''} /> 
+          {isLoadingArchive ? 'Loading...' : 'Refresh Archive'}
         </button>
       </div>
 

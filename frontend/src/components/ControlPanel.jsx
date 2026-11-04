@@ -5,7 +5,8 @@ import {
   Eye, EyeOff, ShieldAlert, Zap, MessageSquare, Radio, Trash2, Video,
   Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X,
   Brain, Package, Truck, User, Plus, Edit2, Tag, Check, Info,
-  Camera, Upload, Image as ImageIcon
+  Camera, Upload, Image as ImageIcon,
+  Terminal, Globe, Activity, Filter, Search, FileText, Lock
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
 import { evaluatePasswordStrength } from '../utils/security';
@@ -74,6 +75,22 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
   // Global AI Threshold State
   const [isApplyingGlobal, setIsApplyingGlobal] = useState(false);
   const [applyGlobalFeedback, setApplyGlobalFeedback] = useState('');
+
+  // System Logs State
+  const [systemLogs, setSystemLogs] = useState([]);
+  const [logSeverityFilter, setLogSeverityFilter] = useState('ALL'); // 'ALL', 'CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG'
+  const [logComponentFilter, setLogComponentFilter] = useState('ALL');
+  const [logSearchTerm, setLogSearchTerm] = useState('');
+  const [logLimit, setLogLimit] = useState(250);
+  const [isLoadingLogs, setIsLoadingLogs] = useState(false);
+  const [logAutoRefresh, setLogAutoRefresh] = useState(true);
+  const [logActionFeedback, setLogActionFeedback] = useState('');
+
+  // Security Login Audit State
+  const [loginAuditData, setLoginAuditData] = useState({ stats: null, audit_logs: [] });
+  const [isLoadingAudit, setIsLoadingAudit] = useState(false);
+  const [auditFilter, setAuditFilter] = useState('all'); // 'all', 'success', 'failed'
+  const [auditActionFeedback, setAuditActionFeedback] = useState('');
 
   const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
@@ -161,6 +178,91 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     }
   };
 
+  const loadSystemLogs = async () => {
+    setIsLoadingLogs(true);
+    try {
+      const res = await api.getSystemLogs({
+        level: logSeverityFilter,
+        component: logComponentFilter,
+        search: logSearchTerm,
+        limit: logLimit
+      });
+      setSystemLogs(res.logs || []);
+    } catch (err) {
+      console.error('Failed to load system logs:', err);
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  };
+
+  const handleClearLogs = async () => {
+    if (!window.confirm('Are you sure you want to clear system logs from memory and database?')) return;
+    try {
+      await api.clearSystemLogs();
+      setSystemLogs([]);
+      setLogActionFeedback('✓ System logs cleared.');
+      setTimeout(() => setLogActionFeedback(''), 3000);
+    } catch (err) {
+      alert('Failed to clear logs: ' + (err.message || err));
+    }
+  };
+
+  const loadLoginAudit = async () => {
+    setIsLoadingAudit(true);
+    try {
+      const res = await api.getLoginAudit(150);
+      setLoginAuditData(res || { stats: null, audit_logs: [] });
+    } catch (err) {
+      console.error('Failed to load login audit:', err);
+    } finally {
+      setIsLoadingAudit(false);
+    }
+  };
+
+  const handleClearLoginAudit = async () => {
+    if (!window.confirm('Clear all security login audit history?')) return;
+    try {
+      await api.clearLoginAudit();
+      setLoginAuditData({
+        stats: { total_recorded: 0, failed_attempts_24h: 0, successful_logins_24h: 0 },
+        audit_logs: []
+      });
+      setAuditActionFeedback('✓ Login audit history cleared.');
+      setTimeout(() => setAuditActionFeedback(''), 3000);
+    } catch (err) {
+      alert('Failed to clear audit logs: ' + (err.message || err));
+    }
+  };
+
+  const formatUserAgent = (ua) => {
+    if (!ua) return 'Unknown Client';
+    if (ua.includes('Gawkr')) return 'Gawkr Android App';
+    if (ua.includes('Android')) return 'Android Browser';
+    if (ua.includes('iPhone') || ua.includes('iPad')) return 'iOS Safari';
+    if (ua.includes('Macintosh')) return 'macOS / Safari/Chrome';
+    if (ua.includes('Windows')) return 'Windows Desktop';
+    if (ua.includes('Linux')) return 'Linux Desktop';
+    return ua.length > 25 ? `${ua.slice(0, 25)}...` : ua;
+  };
+
+  const isPrivateIp = (ip) => {
+    if (!ip) return false;
+    return (
+      ip === '127.0.0.1' ||
+      ip === '::1' ||
+      ip.startsWith('192.168.') ||
+      ip.startsWith('10.') ||
+      ip.startsWith('172.16.') ||
+      ip.startsWith('172.17.') ||
+      ip.startsWith('172.18.') ||
+      ip.startsWith('172.19.') ||
+      ip.startsWith('172.2') ||
+      ip.startsWith('172.3') ||
+      ip.startsWith('fe80:') ||
+      ip.toLowerCase() === 'localhost'
+    );
+  };
+
   useEffect(() => {
     loadSettings();
     loadUsers();
@@ -169,8 +271,25 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
   useEffect(() => {
     if (activeTab === 'users') {
       loadUsers();
+      loadLoginAudit();
+    } else if (activeTab === 'logs') {
+      loadSystemLogs();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'logs') {
+      loadSystemLogs();
+    }
+  }, [logSeverityFilter, logComponentFilter, logLimit]);
+
+  useEffect(() => {
+    if (activeTab !== 'logs' || !logAutoRefresh) return;
+    const interval = setInterval(() => {
+      loadSystemLogs();
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [activeTab, logAutoRefresh, logSeverityFilter, logComponentFilter, logLimit, logSearchTerm]);
 
   const handleApplyGlobalThreshold = async () => {
     if (!settings) return;
@@ -838,6 +957,24 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
           onClick={() => setActiveTab('users')}
         >
           <Users size={14} /> Users & Access
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 120px',
+            border: 'none',
+            borderRadius: '8px',
+            background: activeTab === 'logs' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'logs' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => setActiveTab('logs')}
+        >
+          <Terminal size={14} /> System Logs
         </button>
       </div>
 
@@ -3161,6 +3298,515 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                 </div>
               </div>
             )}
+
+            {/* Security & Login Audit Trail */}
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
+              <div style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '10px',
+                marginBottom: '16px'
+              }}>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <ShieldCheck size={18} color="var(--accent-cyan)" />
+                    <h3 style={{ fontSize: '0.96rem', fontWeight: 700 }}>Security & Login Audit Trail</h3>
+                    {loginAuditData.stats && (
+                      <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>
+                        {loginAuditData.stats.total_recorded} Attempts Recorded
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Real-time authentication activity log capturing client IPs, device signatures, and access statuses.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  {auditActionFeedback && (
+                    <span style={{ fontSize: '0.78rem', color: 'var(--accent-emerald)', fontWeight: 600 }}>
+                      {auditActionFeedback}
+                    </span>
+                  )}
+                  <button
+                    className="btn-glass"
+                    onClick={loadLoginAudit}
+                    disabled={isLoadingAudit}
+                    style={{ fontSize: '0.74rem', padding: '5px 10px' }}
+                  >
+                    <RefreshCw size={12} className={isLoadingAudit ? 'animate-spin' : ''} /> Refresh
+                  </button>
+                  {isAdmin && (
+                    <button
+                      className="btn-glass"
+                      onClick={handleClearLoginAudit}
+                      style={{ fontSize: '0.74rem', padding: '5px 10px', color: '#fb7185' }}
+                    >
+                      <Trash2 size={12} /> Clear Audit
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* KPI Summary Cards */}
+              {loginAuditData.stats && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                  gap: '10px',
+                  marginBottom: '16px'
+                }}>
+                  <div style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.07)',
+                    borderRadius: '8px',
+                    padding: '12px 14px'
+                  }}>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Successful Logins (24h)</div>
+                    <div style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--accent-emerald)', marginTop: '3px' }}>
+                      {loginAuditData.stats.successful_logins_24h}
+                    </div>
+                  </div>
+
+                  <div style={{
+                    background: loginAuditData.stats.failed_attempts_24h > 0 ? 'rgba(244, 63, 94, 0.08)' : 'rgba(255, 255, 255, 0.03)',
+                    border: loginAuditData.stats.failed_attempts_24h > 0 ? '1px solid rgba(244, 63, 94, 0.25)' : '1px solid rgba(255, 255, 255, 0.07)',
+                    borderRadius: '8px',
+                    padding: '12px 14px'
+                  }}>
+                    <div style={{ fontSize: '0.72rem', color: loginAuditData.stats.failed_attempts_24h > 0 ? '#fb7185' : 'var(--text-muted)' }}>
+                      Failed Attempts (24h)
+                    </div>
+                    <div style={{
+                      fontSize: '1.25rem',
+                      fontWeight: 800,
+                      color: loginAuditData.stats.failed_attempts_24h > 0 ? '#fb7185' : 'var(--text-muted)',
+                      marginTop: '3px'
+                    }}>
+                      {loginAuditData.stats.failed_attempts_24h}
+                    </div>
+                  </div>
+
+                  <div style={{
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.07)',
+                    borderRadius: '8px',
+                    padding: '12px 14px'
+                  }}>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Security Status</div>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 700, color: loginAuditData.stats.failed_attempts_24h > 3 ? '#fb7185' : 'var(--accent-cyan)', marginTop: '5px' }}>
+                      {loginAuditData.stats.failed_attempts_24h > 3 ? '⚠️ Suspicious Activity' : '🛡️ Protected'}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Filter controls */}
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
+                {[
+                  { id: 'all', label: 'All Events' },
+                  { id: 'success', label: 'Successful Logins' },
+                  { id: 'failed', label: 'Failed Attempts' }
+                ].map(f => (
+                  <button
+                    key={f.id}
+                    className="btn-glass"
+                    style={{
+                      padding: '4px 10px',
+                      fontSize: '0.72rem',
+                      background: auditFilter === f.id ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+                      borderColor: auditFilter === f.id ? 'var(--accent-cyan)' : 'rgba(255,255,255,0.08)',
+                      color: auditFilter === f.id ? 'var(--accent-cyan)' : 'var(--text-muted)'
+                    }}
+                    onClick={() => setAuditFilter(f.id)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Audit Table */}
+              <div style={{ overflowX: 'auto', maxHeight: '350px', overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.76rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)' }}>
+                      <th style={{ padding: '8px 10px' }}>Timestamp</th>
+                      <th style={{ padding: '8px 10px' }}>User</th>
+                      <th style={{ padding: '8px 10px' }}>Source IP</th>
+                      <th style={{ padding: '8px 10px' }}>Network</th>
+                      <th style={{ padding: '8px 10px' }}>Device / Client</th>
+                      <th style={{ padding: '8px 10px' }}>Status</th>
+                      <th style={{ padding: '8px 10px' }}>Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(!loginAuditData.audit_logs || loginAuditData.audit_logs.length === 0) ? (
+                      <tr>
+                        <td colSpan={7} style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>
+                          No login audit logs recorded yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      loginAuditData.audit_logs
+                        .filter(l => {
+                          if (auditFilter === 'success') return l.status === 'SUCCESS';
+                          if (auditFilter === 'failed') return l.status === 'FAILED';
+                          return true;
+                        })
+                        .map(log => {
+                          const isLan = isPrivateIp(log.ip_address);
+                          const isFailed = log.status === 'FAILED';
+                          const timeStr = new Date(log.timestamp * 1000).toLocaleString();
+
+                          return (
+                            <tr key={log.id} style={{
+                              borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
+                              background: isFailed ? 'rgba(244, 63, 94, 0.04)' : 'transparent'
+                            }}>
+                              <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                                {timeStr}
+                              </td>
+                              <td style={{ padding: '8px 10px', fontWeight: 600 }}>
+                                @{log.username}
+                              </td>
+                              <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: '#93c5fd' }}>
+                                {log.ip_address || 'unknown'}
+                              </td>
+                              <td style={{ padding: '8px 10px' }}>
+                                <span style={{
+                                  fontSize: '0.68rem',
+                                  padding: '2px 6px',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                  background: isLan ? 'rgba(16, 185, 129, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                                  color: isLan ? '#34d399' : '#fb7185',
+                                  border: `1px solid ${isLan ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.3)'}`
+                                }}>
+                                  {isLan ? 'LAN (Internal)' : 'WAN (External)'}
+                                </span>
+                              </td>
+                              <td style={{ padding: '8px 10px', color: 'var(--text-muted)' }} title={log.user_agent}>
+                                {formatUserAgent(log.user_agent)}
+                              </td>
+                              <td style={{ padding: '8px 10px' }}>
+                                <span style={{
+                                  fontSize: '0.72rem',
+                                  fontWeight: 700,
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  color: isFailed ? '#fb7185' : 'var(--accent-emerald)'
+                                }}>
+                                  {isFailed ? <ShieldAlert size={12} /> : <ShieldCheck size={12} />}
+                                  {log.status}
+                                </span>
+                              </td>
+                              <td style={{ padding: '8px 10px', color: isFailed ? '#fb7185' : 'var(--text-muted)', fontSize: '0.72rem' }}>
+                                {log.failure_reason || '—'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ----------------- TAB 7: SYSTEM LOGS ----------------- */}
+      {activeTab === 'logs' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {/* Header Panel */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '12px',
+              marginBottom: '16px'
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Terminal size={20} color="var(--accent-cyan)" />
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>System Logs & Diagnostics</h3>
+                  <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>
+                    {systemLogs.length} Entries
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  Real-time operational logging feed across API, video ingestion pipelines, AI models, and background storage workers.
+                </p>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                {logActionFeedback && (
+                  <span style={{ fontSize: '0.78rem', color: 'var(--accent-emerald)', fontWeight: 600 }}>
+                    {logActionFeedback}
+                  </span>
+                )}
+
+                {/* Auto Refresh Toggle */}
+                <button
+                  className="btn-glass"
+                  onClick={() => setLogAutoRefresh(!logAutoRefresh)}
+                  style={{
+                    fontSize: '0.74rem',
+                    padding: '6px 10px',
+                    borderColor: logAutoRefresh ? 'var(--accent-cyan)' : 'rgba(255,255,255,0.1)',
+                    color: logAutoRefresh ? 'var(--accent-cyan)' : 'var(--text-muted)'
+                  }}
+                >
+                  <Activity size={12} className={logAutoRefresh ? 'animate-pulse' : ''} />
+                  {logAutoRefresh ? 'Auto-Refresh ON (4s)' : 'Auto-Refresh OFF'}
+                </button>
+
+                <button
+                  className="btn-glass"
+                  onClick={loadSystemLogs}
+                  disabled={isLoadingLogs}
+                  style={{ fontSize: '0.74rem', padding: '6px 10px' }}
+                >
+                  <RefreshCw size={12} className={isLoadingLogs ? 'animate-spin' : ''} /> Refresh
+                </button>
+
+                {isAdmin && (
+                  <button
+                    className="btn-glass"
+                    onClick={handleClearLogs}
+                    style={{ fontSize: '0.74rem', padding: '6px 10px', color: '#fb7185' }}
+                  >
+                    <Trash2 size={12} /> Clear Logs
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Filter and Search Bar */}
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '12px',
+              alignItems: 'center',
+              paddingTop: '12px',
+              borderTop: '1px solid rgba(255, 255, 255, 0.08)'
+            }}>
+              {/* Severity Level Buttons */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Level:</span>
+                <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
+                  {[
+                    { id: 'ALL', label: 'ALL' },
+                    { id: 'CRITICAL', label: 'CRITICAL', color: '#fb7185' },
+                    { id: 'ERROR', label: 'ERROR', color: '#fb7185' },
+                    { id: 'WARNING', label: 'WARNING', color: '#f59e0b' },
+                    { id: 'INFO', label: 'INFO', color: '#38bdf8' },
+                    { id: 'DEBUG', label: 'DEBUG', color: '#94a3b8' }
+                  ].map(lvl => (
+                    <button
+                      key={lvl.id}
+                      className="btn-glass"
+                      style={{
+                        padding: '4px 8px',
+                        fontSize: '0.72rem',
+                        background: logSeverityFilter === lvl.id ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+                        borderColor: logSeverityFilter === lvl.id ? (lvl.color || 'var(--accent-cyan)') : 'rgba(255, 255, 255, 0.08)',
+                        color: logSeverityFilter === lvl.id ? (lvl.color || 'var(--accent-cyan)') : 'var(--text-muted)',
+                        fontWeight: logSeverityFilter === lvl.id ? 700 : 500
+                      }}
+                      onClick={() => setLogSeverityFilter(lvl.id)}
+                    >
+                      {lvl.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Component Dropdown */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Component:</span>
+                <select
+                  value={logComponentFilter}
+                  onChange={(e) => setLogComponentFilter(e.target.value)}
+                  className="glass-input"
+                  style={{ width: 'auto', padding: '4px 8px', fontSize: '0.76rem' }}
+                >
+                  <option value="ALL">All Components</option>
+                  <option value="system">system</option>
+                  <option value="auth">auth</option>
+                  <option value="security">security</option>
+                  <option value="stream">stream</option>
+                  <option value="detector">detector</option>
+                  <option value="gemini">gemini</option>
+                  <option value="telegram">telegram</option>
+                  <option value="storage">storage</option>
+                </select>
+              </div>
+
+              {/* Search text */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: '1 1 200px' }}>
+                <Search size={14} color="var(--text-muted)" />
+                <input
+                  type="text"
+                  placeholder="Filter logs by keyword..."
+                  value={logSearchTerm}
+                  onChange={(e) => setLogSearchTerm(e.target.value)}
+                  className="glass-input"
+                  style={{ padding: '4px 8px', fontSize: '0.76rem', width: '100%' }}
+                />
+                {logSearchTerm && (
+                  <button
+                    className="btn-glass"
+                    onClick={() => setLogSearchTerm('')}
+                    style={{ padding: '4px 6px', fontSize: '0.7rem' }}
+                  >
+                    <X size={12} />
+                  </button>
+                )}
+              </div>
+
+              {/* Limit dropdown */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Limit:</span>
+                <select
+                  value={logLimit}
+                  onChange={(e) => setLogLimit(Number(e.target.value))}
+                  className="glass-input"
+                  style={{ width: 'auto', padding: '4px 8px', fontSize: '0.76rem' }}
+                >
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                  <option value={250}>250</option>
+                  <option value={500}>500</option>
+                  <option value={1000}>1,000</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Terminal / Log Viewer */}
+          <div style={{
+            background: '#040711',
+            border: '1px solid rgba(255, 255, 255, 0.1)',
+            borderRadius: '12px',
+            overflow: 'hidden',
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+            fontSize: '0.76rem',
+            boxShadow: 'inset 0 2px 10px rgba(0,0,0,0.5)'
+          }}>
+            {/* Terminal bar header */}
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.04)',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
+              padding: '8px 14px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#fb7185', display: 'inline-block' }} />
+                <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#fbbf24', display: 'inline-block' }} />
+                <span style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#34d399', display: 'inline-block' }} />
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '6px' }}>
+                  stdout / journald buffer
+                </span>
+              </div>
+              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                {systemLogs.length} rows loaded
+              </span>
+            </div>
+
+            {/* Log Rows feed */}
+            <div style={{
+              maxHeight: '520px',
+              overflowY: 'auto',
+              padding: '10px 14px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px'
+            }}>
+              {systemLogs.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--text-muted)' }}>
+                  {isLoadingLogs ? 'Loading system logs...' : 'No system logs matching current filters.'}
+                </div>
+              ) : (
+                systemLogs.map((item, idx) => {
+                  const lvl = (item.level || 'INFO').toUpperCase();
+                  let lvlColor = '#38bdf8';
+                  let lvlBg = 'rgba(56, 189, 248, 0.12)';
+                  if (lvl === 'CRITICAL' || lvl === 'ERROR') {
+                    lvlColor = '#fb7185';
+                    lvlBg = 'rgba(244, 63, 94, 0.15)';
+                  } else if (lvl === 'WARNING' || lvl === 'WARN') {
+                    lvlColor = '#f59e0b';
+                    lvlBg = 'rgba(245, 158, 11, 0.15)';
+                  } else if (lvl === 'DEBUG') {
+                    lvlColor = '#94a3b8';
+                    lvlBg = 'rgba(148, 163, 184, 0.1)';
+                  }
+
+                  const timeStr = item.created_at
+                    ? item.created_at.split('T')[1]?.slice(0, 12) || item.created_at
+                    : (item.timestamp ? new Date(item.timestamp * 1000).toLocaleTimeString() : '');
+
+                  return (
+                    <div
+                      key={item.id || idx}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '10px',
+                        padding: '4px 6px',
+                        borderRadius: '4px',
+                        background: (lvl === 'ERROR' || lvl === 'CRITICAL') ? 'rgba(244, 63, 94, 0.05)' : 'transparent',
+                        lineHeight: '1.45',
+                        wordBreak: 'break-word'
+                      }}
+                    >
+                      {/* Timestamp */}
+                      <span style={{ color: '#64748b', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>
+                        {timeStr}
+                      </span>
+
+                      {/* Level Badge */}
+                      <span style={{
+                        padding: '1px 6px',
+                        borderRadius: '3px',
+                        background: lvlBg,
+                        color: lvlColor,
+                        fontWeight: 700,
+                        fontSize: '0.68rem',
+                        flexShrink: 0,
+                        textAlign: 'center',
+                        minWidth: '58px'
+                      }}>
+                        {lvl}
+                      </span>
+
+                      {/* Component */}
+                      <span style={{ color: '#c084fc', whiteSpace: 'nowrap', flexShrink: 0, fontSize: '0.72rem' }}>
+                        [{item.component || 'system'}]
+                      </span>
+
+                      {/* Message */}
+                      <span style={{ color: '#e2e8f0', flex: 1 }}>
+                        {item.message}
+                        {item.extra && Object.keys(item.extra).length > 0 && (
+                          <span style={{ color: '#94a3b8', marginLeft: '6px', fontSize: '0.7rem' }}>
+                            {JSON.stringify(item.extra)}
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
       )}
