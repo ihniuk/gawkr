@@ -37,8 +37,9 @@ class CameraStreamWorker:
         self.ai_thread: Optional[threading.Thread] = None
         
         # Pre-roll ring buffer (stores recent frames in memory)
-        # 20 FPS * 4 seconds = 80 frames
-        self.pre_roll_buffer: Deque[np.ndarray] = collections.deque(maxlen=90)
+        # Up to 6 seconds of pre-roll at 25 FPS = 150 frames
+        self.pre_roll_buffer: Deque[np.ndarray] = collections.deque(maxlen=150)
+        self.last_preroll_time = 0.0
         self.active_recordings: List[Dict[str, Any]] = []
         self.recording_lock = threading.Lock()
         
@@ -262,23 +263,30 @@ class CameraStreamWorker:
         """Asynchronously records pre-roll and post-roll frames into an H.264 MP4 with +faststart."""
         def _recorder():
             try:
-                post_roll_frames = []
-                frame_interval = 0.05 # ~20 FPS
-                total_post_frames = int(post_roll_seconds / frame_interval)
+                # Synchronize recording frame rate to stream FPS so pre-roll and post-roll match 1.0x real-time speed
+                clip_fps = max(10, min(30, int(round(self.fps)))) if self.fps > 5 else 20
+                frame_interval = 1.0 / clip_fps
+                total_post_frames = int(post_roll_seconds * clip_fps)
+
+                # Determine recording resolution from pre-roll frames
+                if pre_roll_frames:
+                    h, w = pre_roll_frames[0].shape[:2]
+                else:
+                    w, h = 640, 360
+                w = (w // 2) * 2
+                h = (h // 2) * 2
                 
+                post_roll_frames = []
                 for _ in range(total_post_frames):
                     time.sleep(frame_interval)
                     with self.frame_lock:
                         if self.latest_frame is not None:
-                            post_roll_frames.append(self.latest_frame.copy())
+                            post_roll_frames.append(cv2.resize(self.latest_frame, (w, h)))
                             
                 all_frames = list(pre_roll_frames) + post_roll_frames
                 if not all_frames:
                     return
                     
-                h, w = all_frames[0].shape[:2]
-                w = (w // 2) * 2
-                h = (h // 2) * 2
                 out_filename = f"{self.camera.id}_{event_id}.mp4"
                 out_path = RECORDINGS_DIR / out_filename
                 temp_out_path = RECORDINGS_DIR / f"tmp_{out_filename}"
@@ -291,14 +299,14 @@ class CameraStreamWorker:
 
                 encode_args = get_ffmpeg_encode_args(backend=hw_backend, preset=preset, crf=crf)
 
-                # Encode web-compatible H.264 MP4 via FFmpeg pipe with +faststart
+                # Encode web-compatible H.264 MP4 via FFmpeg pipe with matching -r {clip_fps} and +faststart
                 cmd = [
                     'ffmpeg', '-y',
                     '-f', 'rawvideo',
                     '-vcodec', 'rawvideo',
                     '-s', f'{w}x{h}',
                     '-pix_fmt', 'bgr24',
-                    '-r', '20',
+                    '-r', str(clip_fps),
                     '-i', '-',
                     *encode_args,
                     str(temp_out_path)
@@ -327,7 +335,7 @@ class CameraStreamWorker:
                         '-vcodec', 'rawvideo',
                         '-s', f'{w}x{h}',
                         '-pix_fmt', 'bgr24',
-                        '-r', '20',
+                        '-r', str(clip_fps),
                         '-i', '-',
                         '-c:v', 'libx264',
                         '-preset', 'ultrafast',
@@ -574,10 +582,18 @@ class CameraStreamWorker:
                 self.frame_counter += 1
                 self.byte_counter += len(jpeg_bytes)
 
-            # Add frame to rolling pre-roll buffer (scaled down to 640x360 for fast encoding)
-            if self.frame_counter % 2 == 0:
+            # Add frame to rolling pre-roll buffer synchronized to stream clip FPS
+            clip_fps = max(10, min(30, int(round(self.fps)))) if self.fps > 5 else 20
+            preroll_interval = 1.0 / clip_fps
+            now = time.time()
+            if now - self.last_preroll_time >= (preroll_interval * 0.90):
+                self.last_preroll_time = now
+                target_w = 640
+                target_h = int(fh * target_w / fw)
+                target_w = (target_w // 2) * 2
+                target_h = (target_h // 2) * 2
                 with self.frame_lock:
-                    self.pre_roll_buffer.append(cv2.resize(frame, (640, int(fh * 640 / fw))))
+                    self.pre_roll_buffer.append(cv2.resize(frame, (target_w, target_h)))
 
             now = time.time()
             if now - self.last_stat_time >= 1.0:
