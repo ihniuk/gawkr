@@ -245,6 +245,15 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     return ua.length > 25 ? `${ua.slice(0, 25)}...` : ua;
   };
 
+  const formatStorageSize = (mb) => {
+    if (mb === undefined || mb === null) return '0 MB';
+    if (mb >= 1024) {
+      const gb = mb / 1024;
+      return `${gb.toFixed(2)} GB (${Math.round(mb).toLocaleString()} MB)`;
+    }
+    return `${Number(mb).toLocaleString()} MB`;
+  };
+
   const isPrivateIp = (ip) => {
     if (!ip) return false;
     return (
@@ -1014,16 +1023,20 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
                 <div className="glass-card" style={{ padding: '12px', borderRadius: '8px' }}>
-                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Recordings Directory Size</div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    Recordings Directory Size {diskStats.recordings_count !== undefined && `(${diskStats.recordings_count.toLocaleString()} clips)`}
+                  </div>
                   <div style={{ fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)', marginTop: '2px' }}>
-                    {diskStats.recordings_size_mb} MB
+                    {formatStorageSize(diskStats.recordings_size_mb)}
                   </div>
                 </div>
 
                 <div className="glass-card" style={{ padding: '12px', borderRadius: '8px' }}>
-                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Snapshots Directory Size</div>
+                  <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>
+                    Snapshots Directory Size {diskStats.snapshots_count !== undefined && `(${diskStats.snapshots_count.toLocaleString()} frames)`}
+                  </div>
                   <div style={{ fontSize: '1.1rem', fontWeight: 700, fontFamily: 'var(--font-mono)', color: '#34d399', marginTop: '2px' }}>
-                    {diskStats.snapshots_size_mb} MB
+                    {formatStorageSize(diskStats.snapshots_size_mb)}
                   </div>
                 </div>
 
@@ -1056,8 +1069,13 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                     ...settings,
                     storage: { ...settings.storage, recordings_dir: e.target.value }
                   })}
-                  placeholder="e.g. D:\Surveillance\Recordings or \\NAS\NVR\Recordings"
+                  placeholder="e.g. /app/data/recordings or D:\Surveillance\Recordings"
                 />
+                {diskStats && diskStats.recordings_dir && (
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Active Server Location: <code style={{ color: 'var(--accent-cyan)' }}>{diskStats.recordings_dir}</code>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1072,8 +1090,13 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                     ...settings,
                     storage: { ...settings.storage, snapshots_dir: e.target.value }
                   })}
-                  placeholder="e.g. D:\Surveillance\Snapshots"
+                  placeholder="e.g. /app/data/snapshots or D:\Surveillance\Snapshots"
                 />
+                {diskStats && diskStats.snapshots_dir && (
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Active Server Location: <code style={{ color: '#34d399' }}>{diskStats.snapshots_dir}</code>
+                  </div>
+                )}
               </div>
             </div>
 

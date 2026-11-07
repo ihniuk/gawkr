@@ -292,6 +292,30 @@ def save_snapshot_image(camera_id: str, frame: np.ndarray, event_id: str) -> str
 _cached_sys_settings: Optional[SystemSettings] = None
 _cached_sys_settings_time: float = 0.0
 
+def resolve_storage_dir(configured_path: Optional[str], default_dir: Path) -> Path:
+    """
+    Resolves a configured directory path string to a valid, existing directory Path.
+    Handles cross-platform mismatches (e.g., Windows paths like C:\... inside a Linux Docker container),
+    relative paths, and non-existent paths by falling back safely to default_dir.
+    """
+    if not configured_path or not str(configured_path).strip():
+        return default_dir
+
+    cleaned = str(configured_path).strip()
+
+    # Check if a Windows drive path was provided on POSIX (e.g., C:\...)
+    if os.name != 'nt' and len(cleaned) >= 2 and cleaned[1] == ':' and cleaned[0].isalpha():
+        return default_dir
+
+    try:
+        p = Path(cleaned).expanduser().resolve()
+        if p.exists() and p.is_dir():
+            return p
+    except Exception:
+        pass
+
+    return default_dir
+
 def get_system_settings() -> SystemSettings:
     global _cached_sys_settings, _cached_sys_settings_time
     now = time.time()
@@ -308,13 +332,26 @@ def get_system_settings() -> SystemSettings:
         try:
             data = json.loads(row[0])
             settings = SystemSettings(**data)
-            # Ensure valid directory defaults
-            if not settings.storage.recordings_dir:
-                settings.storage.recordings_dir = str(RECORDINGS_DIR)
-            if not settings.storage.snapshots_dir:
-                settings.storage.snapshots_dir = str(SNAPSHOTS_DIR)
+            
+            # Ensure valid directory defaults and auto-heal cross-platform / invalid paths
+            rec_resolved = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR)
+            snap_resolved = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR)
+
+            needs_resave = False
+            if settings.storage.recordings_dir != str(rec_resolved):
+                settings.storage.recordings_dir = str(rec_resolved)
+                needs_resave = True
+            if settings.storage.snapshots_dir != str(snap_resolved):
+                settings.storage.snapshots_dir = str(snap_resolved)
+                needs_resave = True
+
             if not getattr(settings, 'ai_memory', None):
                 settings.ai_memory = AIMemoryConfig()
+                needs_resave = True
+
+            if needs_resave:
+                save_system_settings(settings)
+
             _cached_sys_settings = settings
             _cached_sys_settings_time = now
             return settings
@@ -338,6 +375,11 @@ def get_system_settings() -> SystemSettings:
 
 def save_system_settings(settings: SystemSettings):
     global _cached_sys_settings, _cached_sys_settings_time
+    
+    # Auto-resolve and sanitize directories before saving
+    settings.storage.recordings_dir = str(resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR))
+    settings.storage.snapshots_dir = str(resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR))
+
     _cached_sys_settings = settings
     _cached_sys_settings_time = time.time()
     conn = sqlite3.connect(DB_PATH)
@@ -352,23 +394,32 @@ def save_system_settings(settings: SystemSettings):
 def get_storage_disk_stats() -> Dict[str, Any]:
     """Calculates disk drive space and total recordings / snapshots directory byte usage."""
     settings = get_system_settings()
-    rec_dir = Path(settings.storage.recordings_dir) if settings.storage.recordings_dir else RECORDINGS_DIR
-    snap_dir = Path(settings.storage.snapshots_dir) if settings.storage.snapshots_dir else SNAPSHOTS_DIR
+    rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR)
+    snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR)
 
     total_bytes, used_bytes, free_bytes = shutil.disk_usage(str(DATA_DIR))
     
-    # Calculate folder usage
-    def _dir_size(p: Path) -> int:
-        if not p.exists(): return 0
+    # Calculate folder usage using os.scandir for high speed
+    def _dir_stats(p: Path):
+        if not p.exists() or not p.is_dir():
+            return 0, 0
+        count = 0
         total = 0
-        for entry in p.rglob('*'):
-            if entry.is_file():
-                try: total += entry.stat().st_size
-                except Exception: pass
-        return total
+        try:
+            with os.scandir(p) as it:
+                for entry in it:
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            count += 1
+                            total += entry.stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return count, total
 
-    rec_size = _dir_size(rec_dir)
-    snap_size = _dir_size(snap_dir)
+    rec_count, rec_size = _dir_stats(rec_dir)
+    snap_count, snap_size = _dir_stats(snap_dir)
 
     return {
         "disk_total_gb": round(total_bytes / (1024**3), 1),
@@ -376,6 +427,8 @@ def get_storage_disk_stats() -> Dict[str, Any]:
         "disk_free_gb": round(free_bytes / (1024**3), 1),
         "recordings_size_mb": round(rec_size / (1024**2), 1),
         "snapshots_size_mb": round(snap_size / (1024**2), 1),
+        "recordings_count": rec_count,
+        "snapshots_count": snap_count,
         "recordings_dir": str(rec_dir),
         "snapshots_dir": str(snap_dir),
         "max_storage_gb": settings.storage.max_storage_gb,
@@ -394,8 +447,8 @@ def purge_expired_storage() -> Dict[str, int]:
     if not storage.auto_purge_enabled:
         return {"deleted_events": 0, "deleted_files": 0, "freed_mb": 0}
 
-    rec_dir = Path(storage.recordings_dir) if storage.recordings_dir else RECORDINGS_DIR
-    snap_dir = Path(storage.snapshots_dir) if storage.snapshots_dir else SNAPSHOTS_DIR
+    rec_dir = resolve_storage_dir(storage.recordings_dir, RECORDINGS_DIR)
+    snap_dir = resolve_storage_dir(storage.snapshots_dir, SNAPSHOTS_DIR)
     
     now = time.time()
     deleted_events = 0
