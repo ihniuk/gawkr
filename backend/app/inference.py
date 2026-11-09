@@ -203,8 +203,15 @@ class AIInferenceEngine:
                             vehicle_min = max(0.60, user_conf)
                             if conf < vehicle_min:
                                 continue
+                        elif label == "person":
+                            # Geometric filter for person: reject tiny slivers/specks (garden stakes, fence posts, leaves)
+                            # A real person in surveillance frame has width >= 0.025 and height >= 0.05
+                            if bw < 0.025 or bh < 0.05:
+                                continue
+                            if conf < user_conf:
+                                continue
                         else:
-                            # Person / animals: respect configured threshold
+                            # Person / animals / bicycle: respect configured threshold
                             if conf < user_conf:
                                 continue
 

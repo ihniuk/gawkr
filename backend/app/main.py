@@ -383,6 +383,11 @@ async def get_hardware_capabilities(user: dict = Depends(get_current_user)):
 async def update_settings(new_settings: SystemSettings, user: dict = Depends(require_admin)):
     """Updates storage retention, AI vision credentials, and notification webhooks."""
     save_system_settings(new_settings)
+    global_thresh = getattr(new_settings.detection, 'global_confidence_threshold', 0.50)
+    for c in camera_manager.get_all():
+        if getattr(c.settings, 'use_global_threshold', True):
+            c.settings.confidence_threshold = global_thresh
+            camera_manager.update(c.id, CameraUpdate(settings=c.settings))
     return {
         "status": "updated",
         "settings": new_settings.model_dump(),

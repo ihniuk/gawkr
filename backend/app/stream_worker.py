@@ -129,11 +129,11 @@ class CameraStreamWorker:
 
     def _evaluate_vehicle_motion(self, detections: List[Any], current_time: float) -> List[Any]:
         """
-        Tracks vehicle spatial positions over time to prevent repetitive alerts for parked / stationary vehicles.
-        Marks vehicles as is_stationary=True / has_moved=False if their position has not moved since the last alert.
-        Marks vehicles as has_moved=True if their displacement exceeds threshold (actively in motion).
+        Tracks vehicle and stationary object spatial positions over time to prevent repetitive alerts for parked / stationary objects.
+        Marks objects as is_stationary=True / has_moved=False if their position has not moved since the last alert.
+        Marks objects as has_moved=True if their displacement exceeds threshold (actively in motion).
         """
-        VEHICLE_LABELS = {"car", "truck", "motorcycle", "bus"}
+        TRACKED_STATIC_LABELS = {"car", "truck", "motorcycle", "bus", "bicycle"}
         processed = []
         
         for det in detections:
@@ -141,14 +141,16 @@ class CameraStreamWorker:
             cx = (xmin + xmax) / 2.0
             cy = (ymin + ymax) / 2.0
             
-            if det.label not in VEHICLE_LABELS:
-                # Dynamic non-vehicle subjects (person, dog, cat, etc.) are always active
+            # Allow tracking for vehicles, bicycles, and static candidate detections (e.g. low-confidence person)
+            should_track = (det.label in TRACKED_STATIC_LABELS) or (det.label == "person" and det.confidence < 0.65)
+            if not should_track:
+                # Dynamic non-vehicle subjects with strong confidence are active
                 det.is_stationary = False
                 det.has_moved = True
                 processed.append(det)
                 continue
                 
-            # Match against tracked vehicles
+            # Match against tracked objects
             best_match = None
             min_dist = 999.0
             
@@ -160,7 +162,7 @@ class CameraStreamWorker:
                     best_match = tracked
                     
             if best_match and min_dist < 0.08:
-                # Same vehicle in virtually identical position
+                # Same object in virtually identical position
                 best_match["last_seen"] = current_time
                 best_match["centroid"] = (cx, cy)
                 best_match["box"] = det.box
@@ -170,16 +172,16 @@ class CameraStreamWorker:
                 last_alert_cx, last_alert_cy = best_match.get("last_alert_pos", (cx, cy))
                 alert_displacement = math.hypot(cx - last_alert_cx, cy - last_alert_cy)
                 
-                if alert_displacement >= 0.12:
-                    # Vehicle has moved significantly since last alert!
+                if alert_displacement >= 0.10:
+                    # Object has moved significantly since last alert!
                     det.is_stationary = False
                     det.has_moved = True
                 else:
-                    # Vehicle has remained parked / stationary in same spot
+                    # Object has remained stationary in same spot
                     det.is_stationary = True
                     det.has_moved = False
             else:
-                # Newly detected vehicle or vehicle relocated to new area
+                # Newly detected object or relocated to new area
                 det.is_stationary = False
                 det.has_moved = True
                 self.tracked_vehicles.append({
@@ -194,7 +196,7 @@ class CameraStreamWorker:
                 
             processed.append(det)
             
-        # Clean up stale tracked vehicles not seen in > 10 minutes
+        # Clean up stale tracked objects not seen in > 10 minutes
         self.tracked_vehicles = [
             v for v in self.tracked_vehicles 
             if (current_time - v.get("last_seen", current_time)) < 600.0
@@ -242,16 +244,25 @@ class CameraStreamWorker:
 
             # False Alarm Suppression:
             # If AI Vision analyzed the snapshot and explicitly confirmed that no people or dynamic activity are present
-            # and threat level is Safe, suppress sending a false positive alert to Telegram/Discord.
+            # and threat level is Safe, suppress sending a false positive alert to Telegram/Discord and remove from DB.
             desc_lower = (evt.ai_description or "").lower()
             false_alarm_keywords = [
                 "no people are visible", "no people or dynamic activity",
-                "remains empty with no people", "garden is empty",
-                "empty with no people", "no dynamic activity", "no activity present"
+                "remains empty", "garden is empty", "empty garden",
+                "empty with no people", "no dynamic activity", "no activity present",
+                "vacant", "blissfully vacant", "delightfully empty", "completely empty",
+                "abandoned by humanity", "deserted", "unoccupied", "no persons",
+                "no human", "no pedestrians", "no one is visible", "no visible person",
+                "scene is empty", "driveway is empty", "area is empty", "quiet with no activity"
             ]
             is_confirmed_false_alarm = (evt.threat_level == "Safe") and any(k in desc_lower for k in false_alarm_keywords)
             if is_confirmed_false_alarm:
                 print(f"False alert suppressed for {evt.camera_name}: AI Vision confirmed no dynamic activity or persons.")
+                try:
+                    from app.storage import delete_event_from_db
+                    delete_event_from_db(evt.id)
+                except Exception as del_err:
+                    print(f"Error pruning false alarm event from DB: {del_err}")
                 return
 
             # Outbound notifications (Telegram, Discord, Slack, Pushover)
@@ -652,7 +663,7 @@ class CameraStreamWorker:
             
             alert_detections = [
                 d for d in detections
-                if (d.confidence >= min(0.40, effective_threshold) if d.label == "person" else d.confidence >= effective_threshold)
+                if d.confidence >= effective_threshold
             ]
 
             evaluated_detections = self._evaluate_vehicle_motion(alert_detections, loop_start)
@@ -660,10 +671,10 @@ class CameraStreamWorker:
 
             active_trigger_detections = [
                 d for d in evaluated_detections
-                if not (d.label in {"car", "truck", "motorcycle", "bus"} and getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
+                if not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
             ]
             
-            min_frames = min(2, getattr(self.camera.settings, 'min_confirmation_frames', 2))
+            min_frames = max(1, getattr(self.camera.settings, 'min_confirmation_frames', 2))
             cooldown = getattr(self.camera.settings, 'alert_cooldown_seconds', 45)
             
             if active_trigger_detections:
@@ -676,13 +687,12 @@ class CameraStreamWorker:
                 self.consecutive_detection_count = 0
                 
                 for d in evaluated_detections:
-                    if d.label in {"car", "truck", "motorcycle", "bus"}:
-                        dcx = (d.box[1] + d.box[3]) / 2.0
-                        dcy = (d.box[0] + d.box[2]) / 2.0
-                        for tracked in self.tracked_vehicles:
-                            tcx, tcy = tracked["centroid"]
-                            if math.hypot(dcx - tcx, dcy - tcy) < 0.10:
-                                tracked["last_alert_pos"] = (dcx, dcy)
+                    dcx = (d.box[1] + d.box[3]) / 2.0
+                    dcy = (d.box[0] + d.box[2]) / 2.0
+                    for tracked in self.tracked_vehicles:
+                        tcx, tcy = tracked["centroid"]
+                        if math.hypot(dcx - tcx, dcy - tcy) < 0.10:
+                            tracked["last_alert_pos"] = (dcx, dcy)
                 
                 event_id = str(uuid.uuid4())[:8]
                 snap_url = save_snapshot_image(self.camera.id, frame, event_id)
