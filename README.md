@@ -6,11 +6,69 @@ A high-speed, hardware-accelerated local Network Video Recorder (NVR) with real-
 
 ---
 
+## 📸 Interface Tour & Screenshots
+
+### 1. Live Surveillance Matrix
+Real-time dual 1080p stream matrix with hardware acceleration, live telemetry chips (FPS, bitrate, resolution, neural inference latency), spatial motion tracking (`[PARKED]` vs `[MOVING]`), and active zone overlays.
+
+![Live Surveillance Matrix](docs/screenshots/01_live_matrix.png)
+
+---
+
+### 2. Real-Time AI Detection Feed & Alerts Drawer
+Sliding glassmorphic notification drawer featuring chronological detection events, confidence percentages, instant MP4 clip playback, and mobile app download shortcuts.
+
+![AI Detection Feed & Alerts Drawer](docs/screenshots/02_event_alerts_drawer.png)
+
+---
+
+### 3. Interactive Detection Zones & Tripwires
+Point-and-click polygon editor directly over live video feeds to draw custom inclusion zones, tripwires, or exclusion zones (e.g. ignoring wheelie bins and swaying foliage).
+
+![Detection Zones & Tripwire Editor](docs/screenshots/03_camera_zone_editor.png)
+
+---
+
+### 4. Surveillance Clip Archive & Timeline
+High-fidelity H.264 MP4 clip review with hourly grouping, target filters (people, vehicles, pets), multi-day retention ranges, and 1-click *"Add to AI Memory"* reference capture.
+
+![Surveillance Clip Archive](docs/screenshots/04_clip_review_timeline.png)
+
+---
+
+### 5. AI Recognition Memory & Known Entities
+Teach Gawkr to recognize familiar visitors, delivery couriers (Amazon, Royal Mail, DPD / Evri), family residents, and household vehicles so push notifications and AI Vision identify them by name.
+
+![AI Recognition Memory](docs/screenshots/05_ai_recognition_memory.png)
+
+---
+
+### 6. Master Sensitivity & External AI Vision Intelligence
+Global confidence sliders, night-time person baseline sensitivity, vehicle clutter filters, and multimodal LLM integration (Google Gemini, OpenAI GPT-4o, Local Ollama).
+
+![AI Vision & Detection Settings](docs/screenshots/06_control_panel_ai_vision.png)
+
+---
+
+### 7. Hardware Acceleration & Codec Engine
+Host processor auto-detection, GPU offload engine selection (NVIDIA NVDEC/NVENC, Intel QuickSync QSV, multi-threaded CPU `libx264`), encoding presets, and CRF video quality controls.
+
+![Hardware Acceleration & Codecs](docs/screenshots/07_control_panel_hardware.png)
+
+---
+
+### 8. Triple-Protocol Network Camera Discovery
+Point-and-click camera discovery across ONVIF WS-Discovery (UDP 3702), SSDP multicast, and LAN RTSP port sweeps to find IP cameras with zero RTSP URL guesswork.
+
+![Network Camera Discovery](docs/screenshots/08_network_discovery_modal.png)
+
+---
+
 ## 🚀 Key Highlights
 
 1. **Intelligent Spatial Motion & Anti-Repetition**:
-   - **Stationary vs Moving Tracking**: Knows the difference between an actively driving car and a parked project car in the driveway. Parked cars are marked `[PARKED]` and never spam alerts unless they move ($\ge 12\%$ displacement).
-   - **Multimodal AI Descriptions (Google Gemini / OpenAI / Ollama)**: Delivers 1-2 sentence human-like summaries of actual events without repeating static background items.
+   - **Stationary vs Moving Tracking**: Knows the difference between an actively driving car and a parked project car in the driveway. Parked cars are marked `[PARKED]` and never spam alerts unless they move ($\ge 10\%$ displacement).
+   - **Multimodal AI Descriptions (Google Gemini / OpenAI / Ollama)**: Delivers 1-2 sentence human-like summaries of actual events with false-alarm suppression for empty scenes.
 
 2. **Point-and-Click Network Discovery**:
    - Automated triple-protocol scan (ONVIF WS-Discovery UDP 3702, SSDP multicast, and LAN RTSP port sweep).
@@ -61,5 +119,7 @@ gawkr/
 │   │   ├── components/                 # CameraGrid, CameraTile, EventDrawer, etc.
 │   │   └── api/                        # REST & WebSocket API clients
 │   └── package.json
+├── docs/
+│   └── screenshots/                    # High-resolution application screenshots
 └── docker-compose.yml
 ```
