@@ -218,6 +218,23 @@ export const api = {
     });
   },
 
+  async startTimelapse(id, options) {
+    return apiFetch(`/cameras/${id}/timelapse/start`, {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+  },
+
+  async stopTimelapse(id, compile = true) {
+    return apiFetch(`/cameras/${id}/timelapse/stop?compile=${compile}`, {
+      method: 'POST'
+    });
+  },
+
+  async getTimelapseStatus(id) {
+    return apiFetch(`/cameras/${id}/timelapse/status`);
+  },
+
   async getCameraTelemetry(id) {
     return apiFetch(`/cameras/${id}/telemetry`);
   },

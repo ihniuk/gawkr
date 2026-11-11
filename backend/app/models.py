@@ -115,6 +115,16 @@ class StreamTelemetry(BaseModel):
     ai_latency_ms: float = 0.0
     dropped_frames: int = 0
     status: str = "active"
+    timelapse_active: bool = False
+    timelapse_frames: int = 0
+    timelapse_interval: float = 0.0
+    timelapse_title: Optional[str] = None
+
+class TimelapseStartRequest(BaseModel):
+    interval_seconds: float = 10.0  # Capture 1 frame every N seconds (min 1.0s)
+    output_fps: int = 30            # Output video playback FPS (15, 24, 30, 60)
+    duration_minutes: int = 0       # 0 = continuous until manually stopped
+    title: Optional[str] = ""       # Optional user label
 
 class DetectionObject(BaseModel):
     label: str

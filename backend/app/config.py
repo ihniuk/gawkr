@@ -5,8 +5,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 SNAPSHOTS_DIR = DATA_DIR / "snapshots"
 RECORDINGS_DIR = DATA_DIR / "recordings"
+TIMELAPSES_DIR = DATA_DIR / "timelapses"
 
-for directory in [DATA_DIR, SNAPSHOTS_DIR, RECORDINGS_DIR]:
+for directory in [DATA_DIR, SNAPSHOTS_DIR, RECORDINGS_DIR, TIMELAPSES_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
 
 # Security & Authentication

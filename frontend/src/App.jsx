@@ -12,6 +12,7 @@ import VideoPlaybackModal from './components/VideoPlaybackModal';
 import ClipReviewPage from './components/ClipReviewPage';
 import ControlPanel from './components/ControlPanel';
 import DailyBriefingPage from './components/DailyBriefingPage';
+import TimelapseModal from './components/TimelapseModal';
 import { api, authStorage } from './api/client';
 import { NvrWebSocket } from './api/ws';
 import { ShieldAlert, CheckCircle, Bell, X, Shield, Lock, Smartphone, Zap } from 'lucide-react';
@@ -32,6 +33,7 @@ export default function App() {
   const [activeZoneModalCamera, setActiveZoneModalCamera] = useState(null);
   const [activeSettingsCamera, setActiveSettingsCamera] = useState(null);
   const [activeTelemetryCamera, setActiveTelemetryCamera] = useState(null);
+  const [activeTimelapseCamera, setActiveTimelapseCamera] = useState(null);
   const [activePlaybackEvent, setActivePlaybackEvent] = useState(null);
   const [memoryInitialData, setMemoryInitialData] = useState(null);
   
@@ -243,6 +245,28 @@ export default function App() {
       }
     } catch (err) {
       alert("Failed to trigger test alert: " + err.message);
+    }
+  };
+
+  const handleTimelapseStatusChange = (cameraId, statusRes) => {
+    setTelemetryMap(prev => ({
+      ...prev,
+      [cameraId]: {
+        ...(prev[cameraId] || { camera_id: cameraId }),
+        timelapse_active: Boolean(statusRes?.active),
+        timelapse_frames: statusRes?.frame_count ?? 0,
+        timelapse_interval: statusRes?.interval_seconds ?? prev[cameraId]?.timelapse_interval ?? 0,
+        timelapse_title: statusRes?.title ?? prev[cameraId]?.timelapse_title
+      }
+    }));
+  };
+
+  const handleStopTimelapse = async (cam) => {
+    try {
+      const res = await api.stopTimelapse(cam.id, true);
+      handleTimelapseStatusChange(cam.id, res);
+    } catch (err) {
+      alert("Failed to stop time-lapse: " + err.message);
     }
   };
 
@@ -622,6 +646,7 @@ export default function App() {
           x={contextMenu.x}
           y={contextMenu.y}
           camera={contextMenu.camera}
+          telemetry={telemetryMap[contextMenu.camera.id]}
           isAdmin={isAdmin}
           onClose={handleCloseContextMenu}
           onTakeSnapshot={handleTakeSnapshot}
@@ -630,6 +655,8 @@ export default function App() {
           onToggleRecording={handleToggleRecording}
           onRestartStream={handleRestartStream}
           onTriggerTestAlert={handleTriggerTestAlert}
+          onOpenTimelapse={(cam) => setActiveTimelapseCamera(cam)}
+          onStopTimelapse={handleStopTimelapse}
           onOpenSettings={(cam) => setActiveSettingsCamera(cam)}
           onOpenTelemetry={(cam) => setActiveTelemetryCamera(cam)}
           onDeleteCamera={handleDeleteCamera}
@@ -668,6 +695,16 @@ export default function App() {
           camera={activeTelemetryCamera}
           telemetry={telemetryMap[activeTelemetryCamera.id]}
           onClose={() => setActiveTelemetryCamera(null)}
+        />
+      )}
+
+      {/* Time-Lapse Modal */}
+      {activeTimelapseCamera && (
+        <TimelapseModal
+          camera={activeTimelapseCamera}
+          telemetry={telemetryMap[activeTimelapseCamera.id]}
+          onClose={() => setActiveTimelapseCamera(null)}
+          onStatusChange={handleTimelapseStatusChange}
         />
       )}
 
@@ -715,11 +752,11 @@ export default function App() {
             style={{ flex: 1, cursor: 'pointer' }}
             onClick={() => setActivePlaybackEvent(activeToast)}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--accent-cyan)', fontWeight: 700, fontSize: '0.84rem' }}>
-              <ShieldAlert size={15} /> AI Alert: {activeToast.objects?.[0]?.label?.toUpperCase() || 'OBJECT'}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: activeToast.objects?.[0]?.label === 'timelapse' ? '#c084fc' : 'var(--accent-cyan)', fontWeight: 700, fontSize: '0.84rem' }}>
+              <ShieldAlert size={15} /> {activeToast.objects?.[0]?.label === 'timelapse' ? 'Time-Lapse Compiled!' : `AI Alert: ${activeToast.objects?.[0]?.label?.toUpperCase() || 'OBJECT'}`}
             </div>
             <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-              Detected at <strong>{activeToast.camera_name}</strong> • <em>Click to Inspect Clip</em>
+              {activeToast.objects?.[0]?.label === 'timelapse' ? 'Ready at' : 'Detected at'} <strong>{activeToast.camera_name}</strong> • <em>Click to Inspect Clip</em>
             </div>
           </div>
           <button 

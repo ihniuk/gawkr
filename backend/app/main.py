@@ -17,7 +17,7 @@ from app.models import (
     CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
     AIMemoryConfig, AIMemoryItem,
-    TestStreamRequest, TestStreamResponse
+    TestStreamRequest, TestStreamResponse, TimelapseStartRequest
 )
 from app.auth import (
     authenticate_user, create_access_token, get_current_user, require_admin,
@@ -263,6 +263,35 @@ async def get_camera_telemetry(camera_id: str, user: dict = Depends(get_current_
     if not worker:
         raise HTTPException(status_code=404, detail="Camera stream not found")
     return worker.get_telemetry()
+
+@app.post("/api/cameras/{camera_id}/timelapse/start")
+async def start_camera_timelapse(camera_id: str, req: TimelapseStartRequest, user: dict = Depends(require_admin)):
+    """Starts a background time-lapse frame capture session for the specified camera."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return worker.start_timelapse(
+        interval_seconds=req.interval_seconds,
+        output_fps=req.output_fps,
+        duration_minutes=req.duration_minutes,
+        title=req.title or ""
+    )
+
+@app.post("/api/cameras/{camera_id}/timelapse/stop")
+async def stop_camera_timelapse(camera_id: str, compile: bool = Query(True), user: dict = Depends(require_admin)):
+    """Stops active time-lapse capture and compiles frames into an MP4 clip (unless compile=false)."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return worker.stop_timelapse(compile_video=compile)
+
+@app.get("/api/cameras/{camera_id}/timelapse/status")
+async def get_camera_timelapse_status(camera_id: str, user: dict = Depends(get_current_user)):
+    """Returns current time-lapse capture session metrics for the camera."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return worker.get_timelapse_status()
 
 # ----------------- VIDEO STREAMING & SNAPSHOTS -----------------
 
