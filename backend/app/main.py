@@ -21,6 +21,7 @@ from app.models import (
 )
 from app.auth import (
     authenticate_user, create_access_token, get_current_user, require_admin,
+    verify_ha_integration_auth,
     create_stream_ticket, verify_stream_ticket,
     list_users, add_new_user, reset_user_password, update_user_role, delete_user
 )
@@ -48,16 +49,49 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize camera manager with the active event loop
     loop = asyncio.get_running_loop()
     camera_manager.initialize(loop)
+
+    from app.mqtt_client import mqtt_service
+    try:
+        startup_settings = get_system_settings()
+        if startup_settings.notifications.mqtt.enabled and startup_settings.notifications.mqtt.ha_discovery:
+            mqtt_service.sync_all_cameras(camera_manager.get_all(), startup_settings.notifications.mqtt)
+    except Exception as e:
+        logger.warning(f"Initial Home Assistant MQTT sync skipped: {e}", component="system")
     
-    # Background task for periodic telemetry broadcast
+    # Background task for periodic telemetry broadcast & Home Assistant MQTT snapshot push
+    last_mqtt_snap_push = 0.0
     async def telemetry_loop():
+        nonlocal last_mqtt_snap_push
         while True:
             await asyncio.sleep(2.0)
+            now = time.time()
+            mqtt_cfg = None
+            should_push_mqtt = False
+            try:
+                mqtt_cfg = get_system_settings().notifications.mqtt
+                interval = max(1, int(getattr(mqtt_cfg, "snapshot_interval_seconds", 5)))
+                if mqtt_cfg.enabled and (mqtt_cfg.broker_url or mqtt_cfg.broker_host) and (now - last_mqtt_snap_push >= interval):
+                    should_push_mqtt = True
+                    last_mqtt_snap_push = now
+            except Exception:
+                pass
+
             for cam in camera_manager.get_all():
                 worker = camera_manager.get_worker(cam.id)
                 if worker:
                     telem = worker.get_telemetry()
                     await notification_manager.send_telemetry_update(telem.model_dump())
+                    if should_push_mqtt and mqtt_cfg:
+                        jpeg = worker.get_latest_jpeg() if getattr(mqtt_cfg, "publish_live_snapshots", True) else None
+                        await asyncio.to_thread(
+                            mqtt_service.publish_camera_state,
+                            cam.id,
+                            cam.is_online,
+                            telem.fps,
+                            getattr(cam.settings, "ai_enabled", True),
+                            jpeg,
+                            mqtt_cfg,
+                        )
     
     async def storage_retention_loop():
         from app.storage import purge_expired_storage
@@ -75,6 +109,7 @@ async def lifespan(app: FastAPI):
     logger.info("Gawkr AI-NVR Server shutting down...", component="system")
     task.cancel()
     storage_task.cancel()
+    mqtt_service.shutdown()
     camera_manager.shutdown()
 
 app = FastAPI(title="Gawkr AI-NVR Server", version="1.0.0", lifespan=lifespan)
@@ -388,6 +423,9 @@ async def update_settings(new_settings: SystemSettings, user: dict = Depends(req
         if getattr(c.settings, 'use_global_threshold', True):
             c.settings.confidence_threshold = global_thresh
             camera_manager.update(c.id, CameraUpdate(settings=c.settings))
+    if new_settings.notifications.mqtt.enabled and new_settings.notifications.mqtt.ha_discovery:
+        from app.mqtt_client import mqtt_service
+        mqtt_service.sync_all_cameras(camera_manager.get_all(), new_settings.notifications.mqtt)
     return {
         "status": "updated",
         "settings": new_settings.model_dump(),
@@ -538,13 +576,22 @@ async def test_notification(service: str, payload: dict, user: dict = Depends(re
             return send_pushover_alert(user_key, api_token, DummyEvent())
 
         elif service == "mqtt":
-            broker = payload.get("broker_url")
+            broker = payload.get("broker_url") or payload.get("broker_host")
             if not broker:
-                raise HTTPException(status_code=400, detail="Missing MQTT Broker URL (e.g. localhost:1883)")
+                raise HTTPException(status_code=400, detail="Missing MQTT Broker URL or Host (e.g. homeassistant.local:1883)")
             from app.mqtt_client import mqtt_service
             from app.models import MqttConfig
             cfg = MqttConfig(**payload)
-            mqtt_service.publish_ha_discovery("test_cam", "Test Security Cam", cfg)
+            cfg.enabled = True
+            cams = camera_manager.get_all()
+            if cams:
+                synced = mqtt_service.sync_all_cameras(cams, cfg)
+                if synced == 0:
+                    raise HTTPException(status_code=400, detail="Could not connect to MQTT broker with the provided credentials.")
+                return {"success": True, "message": f"MQTT connected! Published Home Assistant discovery for {synced} camera(s)."}
+            ok = mqtt_service.publish_ha_discovery("test_cam", "Test Security Cam", cfg)
+            if not ok:
+                raise HTTPException(status_code=400, detail="Could not connect to MQTT broker.")
             return {"success": True, "message": "MQTT connected! Home Assistant discovery published."}
 
         raise HTTPException(status_code=400, detail=f"Unsupported notification service: {service}")
@@ -615,6 +662,88 @@ async def trigger_generate_briefing(user: dict = Depends(require_admin)):
     """Triggers an on-demand refresh of the AI security digest."""
     from app.daily_briefing import generate_daily_briefing
     return generate_daily_briefing(hours=24)
+
+# ----------------- HOME ASSISTANT CCTV COMPATIBILITY -----------------
+
+@app.get("/api/ha/cameras")
+async def ha_list_cameras(request: Request, user: dict = Depends(verify_ha_integration_auth)):
+    """Lists cameras with Home Assistant-compatible snapshot, MJPEG, and RTSP URLs."""
+    base_url = str(request.base_url).rstrip("/")
+    token_q = request.query_params.get("token")
+    suffix = f"?token={token_q}" if token_q else ""
+    result = []
+    for cam in camera_manager.get_all():
+        worker = camera_manager.get_worker(cam.id)
+        telem = worker.get_telemetry() if worker else None
+        result.append({
+            "id": cam.id,
+            "name": cam.name,
+            "vendor": cam.vendor,
+            "model": cam.model,
+            "is_online": cam.is_online,
+            "ai_enabled": getattr(cam.settings, "ai_enabled", True),
+            "fps": telem.fps if telem else 0.0,
+            "resolution": telem.resolution if telem else "Unknown",
+            "snapshot_url": f"{base_url}/api/ha/cameras/{cam.id}/snapshot{suffix}",
+            "mjpeg_url": f"{base_url}/api/ha/cameras/{cam.id}/stream{suffix}",
+            "rtsp_main_url": cam.main_stream_url,
+            "rtsp_sub_url": cam.sub_stream_url,
+        })
+    return {"count": len(result), "cameras": result}
+
+
+@app.get("/api/ha/cameras/{camera_id}/snapshot")
+async def ha_camera_snapshot(camera_id: str, user: dict = Depends(verify_ha_integration_auth)):
+    """Returns the latest AI-annotated JPEG snapshot for Home Assistant camera entities."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    jpeg = worker.get_latest_jpeg() or camera_manager.take_snapshot(camera_id)
+    if not jpeg:
+        raise HTTPException(status_code=503, detail="Camera snapshot not yet available")
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+@app.get("/api/ha/cameras/{camera_id}/stream")
+async def ha_camera_stream(camera_id: str, user: dict = Depends(verify_ha_integration_auth)):
+    """Streams AI-annotated MJPEG video for Home Assistant MJPEG/Generic Camera integration."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream inactive")
+
+    async def frame_generator():
+        last_frame_ref = None
+        while True:
+            jpeg = worker.get_latest_jpeg()
+            if jpeg is not None and jpeg is not last_frame_ref:
+                last_frame_ref = jpeg
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+                await asyncio.sleep(0.015)
+            else:
+                await asyncio.sleep(0.015)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.post("/api/ha/sync")
+async def ha_sync_discovery(user: dict = Depends(verify_ha_integration_auth)):
+    """Publishes Home Assistant MQTT auto-discovery configs for all cameras."""
+    from app.mqtt_client import mqtt_service
+
+    settings = get_system_settings()
+    cfg = settings.notifications.mqtt
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail="MQTT integration is disabled in Gawkr settings")
+    cams = camera_manager.get_all()
+    synced = mqtt_service.sync_all_cameras(cams, cfg)
+    return {"status": "synced", "cameras_synced": synced, "total_cameras": len(cams)}
+
 
 # ----------------- WEBSOCKET ALERTS -----------------
 

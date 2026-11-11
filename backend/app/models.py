@@ -179,6 +179,9 @@ class MqttConfig(BaseModel):
     password: str = ""
     topic_prefix: str = "homeassistant/nvr"
     ha_discovery: bool = True
+    ha_api_key: str = ""
+    publish_live_snapshots: bool = True
+    snapshot_interval_seconds: int = 5
 
 class PushoverConfig(BaseModel):
     enabled: bool = False

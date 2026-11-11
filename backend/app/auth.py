@@ -3,7 +3,8 @@ import hashlib
 import hmac
 import re
 import jwt
-from fastapi import HTTPException, Security, Depends, status
+from typing import Optional
+from fastapi import HTTPException, Security, Depends, Request, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.config import (
     JWT_SECRET, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
@@ -92,6 +93,43 @@ async def require_admin(user: dict = Depends(get_current_user)) -> dict:
             detail="Admin privileges required for this operation"
         )
     return user
+
+
+async def verify_ha_integration_auth(
+    request: Request,
+    token: Optional[str] = Query(None),
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security_scheme),
+) -> dict:
+    """Authenticates Home Assistant CCTV requests via JWT Bearer, ?token=, or X-HA-Token API key."""
+    candidate = None
+    if credentials and credentials.credentials:
+        candidate = credentials.credentials
+    elif request.headers.get("x-ha-token"):
+        candidate = request.headers.get("x-ha-token").strip()
+    elif token:
+        candidate = token.strip()
+
+    if not candidate:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication token or Home Assistant API key required",
+        )
+
+    settings = storage.get_system_settings()
+    ha_key = getattr(getattr(settings.notifications, "mqtt", None), "ha_api_key", "") or ""
+    if ha_key and hmac.compare_digest(candidate, ha_key):
+        return {"username": "homeassistant", "role": UserRole.ADMIN, "auth_type": "ha_api_key"}
+
+    payload = decode_access_token(candidate)
+    if payload and "sub" in payload:
+        user = storage.get_user_by_username(payload["sub"])
+        if user:
+            return user
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired token",
+    )
 
 def validate_password_strength(password: str) -> None:
     """Enforces minimum 8 characters, with letters and numbers."""

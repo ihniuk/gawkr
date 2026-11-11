@@ -37,10 +37,13 @@ def dispatch_event_notifications(event: DetectionEvent, config: NotificationsCon
             print(f"Pushover dispatch error: {e}")
 
     # 5. MQTT & Home Assistant
-    if config.mqtt.enabled and config.mqtt.broker_url:
+    if config.mqtt.enabled and (config.mqtt.broker_url or config.mqtt.broker_host):
         try:
             from app.mqtt_client import mqtt_service
-            mqtt_service.publish_event(event, config.mqtt)
+            snap_bytes = None
+            if snapshot_path and Path(snapshot_path).exists():
+                snap_bytes = Path(snapshot_path).read_bytes()
+            mqtt_service.publish_event(event, config.mqtt, snapshot_bytes=snap_bytes)
         except Exception as e:
             print(f"MQTT dispatch error: {e}")
 
