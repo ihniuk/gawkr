@@ -64,6 +64,9 @@ class CameraSettings(BaseModel):
     min_area_pixels: int = 2500        # Reject small pixel changes, leaves, wind
     pre_roll_seconds: int = 4          # Pre-roll recording seconds before detection
     post_roll_seconds: int = 6         # Post-roll recording seconds after detection
+    timelapse_interval_seconds: float = 10.0  # Basic time-lapse capture interval
+    timelapse_output_fps: int = 30            # Basic time-lapse playback speed
+    timelapse_duration_minutes: int = 0       # 0 = manual stop
 
 class CameraCreate(BaseModel):
     name: str
@@ -121,10 +124,10 @@ class StreamTelemetry(BaseModel):
     timelapse_title: Optional[str] = None
 
 class TimelapseStartRequest(BaseModel):
-    interval_seconds: float = 10.0  # Capture 1 frame every N seconds (min 1.0s)
-    output_fps: int = 30            # Output video playback FPS (15, 24, 30, 60)
-    duration_minutes: int = 0       # 0 = continuous until manually stopped
-    title: Optional[str] = ""       # Optional user label
+    interval_seconds: Optional[float] = None  # Capture 1 frame every N seconds (falls back to camera settings)
+    output_fps: Optional[int] = None          # Output video playback FPS
+    duration_minutes: Optional[int] = None    # 0 = continuous until manually stopped
+    title: Optional[str] = ""                 # Optional user label
 
 class DetectionObject(BaseModel):
     label: str

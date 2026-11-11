@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Timer, X, Play, Square, Trash2, Film, Clock, Sparkles } from 'lucide-react';
+import { Timer, X, Play, Square, Trash2, Save, Sparkles } from 'lucide-react';
 import { api } from '../api/client';
 
-export default function TimelapseModal({ camera, telemetry, onClose, onStatusChange }) {
+export default function TimelapseModal({ camera, telemetry, onClose, onStatusChange, onCameraUpdated }) {
   const isActive = Boolean(telemetry?.timelapse_active);
 
-  const [intervalSeconds, setIntervalSeconds] = useState(10);
-  const [outputFps, setOutputFps] = useState(30);
-  const [durationMinutes, setDurationMinutes] = useState(0);
+  const [intervalSeconds, setIntervalSeconds] = useState(camera.settings?.timelapse_interval_seconds ?? 10);
+  const [outputFps, setOutputFps] = useState(camera.settings?.timelapse_output_fps ?? 30);
+  const [durationMinutes, setDurationMinutes] = useState(camera.settings?.timelapse_duration_minutes ?? 0);
   const [title, setTitle] = useState(`${camera.name} Time-Lapse`);
 
   const [statusData, setStatusData] = useState(null);
@@ -31,15 +31,45 @@ export default function TimelapseModal({ camera, telemetry, onClose, onStatusCha
     };
   }, [camera.id, isActive]);
 
+  const persistCameraSettings = async () => {
+    const cleanInterval = Math.max(1, Number(intervalSeconds) || 10);
+    const cleanFps = Number(outputFps) || 30;
+    const cleanDur = Number(durationMinutes) || 0;
+    const updatedCam = await api.updateCamera(camera.id, {
+      settings: {
+        ...camera.settings,
+        timelapse_interval_seconds: cleanInterval,
+        timelapse_output_fps: cleanFps,
+        timelapse_duration_minutes: cleanDur
+      }
+    });
+    if (onCameraUpdated && updatedCam) onCameraUpdated(updatedCam);
+    return { cleanInterval, cleanFps, cleanDur };
+  };
+
+  const handleSaveOnly = async () => {
+    setIsSubmitting(true);
+    setErrorMsg('');
+    try {
+      await persistCameraSettings();
+      onClose();
+    } catch (err) {
+      setErrorMsg(err.message || 'Failed to save time-lapse settings');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const handleStart = async (e) => {
     if (e) e.preventDefault();
     setIsSubmitting(true);
     setErrorMsg('');
     try {
+      const { cleanInterval, cleanFps, cleanDur } = await persistCameraSettings();
       const res = await api.startTimelapse(camera.id, {
-        interval_seconds: Math.max(1, Number(intervalSeconds) || 10),
-        output_fps: Number(outputFps) || 30,
-        duration_minutes: Number(durationMinutes) || 0,
+        interval_seconds: cleanInterval,
+        output_fps: cleanFps,
+        duration_minutes: cleanDur,
         title: title.trim() || `${camera.name} Time-Lapse`
       });
       setStatusData(res);
@@ -349,9 +379,18 @@ export default function TimelapseModal({ camera, telemetry, onClose, onStatusCha
             </div>
 
             {/* Actions */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '4px', flexWrap: 'wrap' }}>
               <button type="button" className="btn-glass" onClick={onClose} style={{ padding: '9px 14px', fontSize: '0.82rem' }}>
                 Cancel
+              </button>
+              <button
+                type="button"
+                className="btn-glass"
+                disabled={isSubmitting}
+                onClick={handleSaveOnly}
+                style={{ padding: '9px 14px', fontSize: '0.82rem', borderColor: 'rgba(168, 85, 247, 0.4)', color: '#e9d5ff' }}
+              >
+                <Save size={14} /> Save Settings
               </button>
               <button
                 type="submit"
@@ -359,7 +398,7 @@ export default function TimelapseModal({ camera, telemetry, onClose, onStatusCha
                 disabled={isSubmitting}
                 style={{ padding: '9px 18px', fontSize: '0.84rem', fontWeight: 700 }}
               >
-                <Play size={14} /> {isSubmitting ? 'Starting...' : 'Start Time-Lapse'}
+                <Play size={14} /> {isSubmitting ? 'Starting...' : 'Save & Start'}
               </button>
             </div>
           </form>

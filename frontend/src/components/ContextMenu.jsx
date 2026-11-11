@@ -18,6 +18,7 @@ export default function ContextMenu({
   onToggleRecording,
   onRestartStream,
   onTriggerTestAlert,
+  onStartTimelapse,
   onOpenTimelapse,
   onStopTimelapse,
   onOpenSettings,
@@ -45,7 +46,7 @@ export default function ContextMenu({
 
   // Adjust position so it doesn't overflow screen
   const menuWidth = Math.min(260, window.innerWidth - 20);
-  const menuHeight = 435;
+  const menuHeight = 465;
   const adjustedX = Math.max(10, Math.min(x, window.innerWidth - menuWidth - 10));
   const adjustedY = Math.max(10, Math.min(y, window.innerHeight - menuHeight - 10));
 
@@ -108,10 +109,16 @@ export default function ContextMenu({
             </button>
           </>
         ) : (
-          <button className="context-menu-item" onClick={() => { onOpenTimelapse(camera); onClose(); }}>
-            <Timer size={15} color="#c084fc" />
-            <span>Start Time-Lapse</span>
-          </button>
+          <>
+            <button className="context-menu-item" onClick={() => { onStartTimelapse(camera); onClose(); }}>
+              <Timer size={15} color="#c084fc" />
+              <span>Start Time-Lapse</span>
+            </button>
+            <button className="context-menu-item" onClick={() => { onOpenTimelapse(camera); onClose(); }}>
+              <Settings size={15} color="#94a3b8" />
+              <span>Time-Lapse Settings</span>
+            </button>
+          </>
         )
       )}
 

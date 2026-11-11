@@ -261,6 +261,20 @@ export default function App() {
     }));
   };
 
+  const handleStartTimelapse = async (cam) => {
+    try {
+      const res = await api.startTimelapse(cam.id, {
+        interval_seconds: cam.settings?.timelapse_interval_seconds ?? 10,
+        output_fps: cam.settings?.timelapse_output_fps ?? 30,
+        duration_minutes: cam.settings?.timelapse_duration_minutes ?? 0,
+        title: `${cam.name} Time-Lapse`
+      });
+      handleTimelapseStatusChange(cam.id, res);
+    } catch (err) {
+      alert("Failed to start time-lapse: " + err.message);
+    }
+  };
+
   const handleStopTimelapse = async (cam) => {
     try {
       const res = await api.stopTimelapse(cam.id, true);
@@ -655,6 +669,7 @@ export default function App() {
           onToggleRecording={handleToggleRecording}
           onRestartStream={handleRestartStream}
           onTriggerTestAlert={handleTriggerTestAlert}
+          onStartTimelapse={handleStartTimelapse}
           onOpenTimelapse={(cam) => setActiveTimelapseCamera(cam)}
           onStopTimelapse={handleStopTimelapse}
           onOpenSettings={(cam) => setActiveSettingsCamera(cam)}
@@ -705,6 +720,7 @@ export default function App() {
           telemetry={telemetryMap[activeTimelapseCamera.id]}
           onClose={() => setActiveTimelapseCamera(null)}
           onStatusChange={handleTimelapseStatusChange}
+          onCameraUpdated={handleCameraUpdated}
         />
       )}
 

@@ -265,16 +265,21 @@ async def get_camera_telemetry(camera_id: str, user: dict = Depends(get_current_
     return worker.get_telemetry()
 
 @app.post("/api/cameras/{camera_id}/timelapse/start")
-async def start_camera_timelapse(camera_id: str, req: TimelapseStartRequest, user: dict = Depends(require_admin)):
+async def start_camera_timelapse(camera_id: str, req: Optional[TimelapseStartRequest] = None, user: dict = Depends(require_admin)):
     """Starts a background time-lapse frame capture session for the specified camera."""
     worker = camera_manager.get_worker(camera_id)
     if not worker:
         raise HTTPException(status_code=404, detail="Camera stream not found")
+    cam_settings = getattr(worker.camera, 'settings', None)
+    interval = req.interval_seconds if (req and req.interval_seconds is not None) else getattr(cam_settings, 'timelapse_interval_seconds', 10.0)
+    fps = req.output_fps if (req and req.output_fps is not None) else getattr(cam_settings, 'timelapse_output_fps', 30)
+    dur = req.duration_minutes if (req and req.duration_minutes is not None) else getattr(cam_settings, 'timelapse_duration_minutes', 0)
+    title = (req.title if req else "") or ""
     return worker.start_timelapse(
-        interval_seconds=req.interval_seconds,
-        output_fps=req.output_fps,
-        duration_minutes=req.duration_minutes,
-        title=req.title or ""
+        interval_seconds=interval,
+        output_fps=fps,
+        duration_minutes=dur,
+        title=title
     )
 
 @app.post("/api/cameras/{camera_id}/timelapse/stop")
