@@ -90,15 +90,10 @@ export default function TimelapseModal({ camera, telemetry, onClose, onStatusCha
   };
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-overlay" onClick={onClose}>
       <div
-        className="glass-panel modal-container"
-        style={{
-          maxWidth: '520px',
-          width: '94vw',
-          padding: '24px',
-          borderRadius: '16px'
-        }}
+        className="modal-content"
+        style={{ maxWidth: '520px' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

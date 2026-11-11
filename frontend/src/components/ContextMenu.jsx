@@ -104,13 +104,13 @@ export default function ContextMenu({
             </button>
             <button className="context-menu-item" onClick={() => { onOpenTimelapse(camera); onClose(); }}>
               <Timer size={15} color="#c084fc" />
-              <span>Time-Lapse Session Status...</span>
+              <span>Time-Lapse Session Status</span>
             </button>
           </>
         ) : (
           <button className="context-menu-item" onClick={() => { onOpenTimelapse(camera); onClose(); }}>
             <Timer size={15} color="#c084fc" />
-            <span>Start Time-Lapse...</span>
+            <span>Start Time-Lapse</span>
           </button>
         )
       )}
