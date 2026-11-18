@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Shield, Plus, Trash2, Eye, EyeOff, Check, AlertCircle,
-  RotateCcw, Sparkles, Layers, Sliders, Lock
+  RotateCcw, Sparkles, Layers, Sliders, Lock, RefreshCw
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -14,18 +14,32 @@ export default function ZoneEditor({ camera, zones, onChange }) {
   const [newZoneName, setNewZoneName] = useState('');
   const [newZoneType, setNewZoneType] = useState('include'); // 'include', 'exclude', 'privacy_mask'
   const svgRef = useRef(null);
+  const blobUrlRef = useRef(null);
 
   useEffect(() => {
     loadSnapshot();
+    return () => {
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+    };
   }, [camera.id]);
 
   const loadSnapshot = async () => {
     setIsLoadingSnapshot(true);
     try {
       const url = await api.captureSnapshot(camera.id);
+      if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = url;
       setSnapshotUrl(url);
     } catch (e) {
       console.warn("Could not load pristine snapshot, falling back to stream url", e);
+      try {
+        const ticketRes = await api.getStreamTicket(camera.id);
+        if (ticketRes && ticketRes.ticket) {
+          setSnapshotUrl(`/api/cameras/${camera.id}/stream?ticket=${ticketRes.ticket}`);
+        }
+      } catch (err2) {
+        console.error("Fallback to stream also failed", err2);
+      }
     } finally {
       setIsLoadingSnapshot(false);
     }
@@ -150,6 +164,16 @@ export default function ZoneEditor({ camera, zones, onChange }) {
                 onClick={() => startNewZone('privacy_mask')}
               >
                 <Lock size={12} /> + Privacy Mask
+              </button>
+              <button
+                type="button"
+                className="btn-glass"
+                style={{ fontSize: '0.74rem', padding: '5px 10px' }}
+                onClick={loadSnapshot}
+                disabled={isLoadingSnapshot}
+                title="Refresh camera snapshot"
+              >
+                <RefreshCw size={12} className={isLoadingSnapshot ? "spin" : ""} /> Refresh Frame
               </button>
             </>
           ) : (

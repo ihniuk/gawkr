@@ -43,6 +43,9 @@ class CameraStreamWorker:
         self.last_preroll_time = 0.0
         self.active_recordings: List[Dict[str, Any]] = []
         self.recording_lock = threading.Lock()
+        self.is_recording_clip: bool = False
+        self.recording_event_id: Optional[str] = None
+        self.last_active_detection_time: float = 0.0
         
         # False-alert prevention: multi-frame persistence filter
         self.consecutive_detection_count = 0
@@ -289,47 +292,44 @@ class CameraStreamWorker:
         except Exception as e:
             print(f"Vision enhancement / notification dispatch error: {e}")
 
-    def _record_event_clip_async(self, event_id: str, pre_roll_frames: List[np.ndarray], post_roll_seconds: int = 5):
-        """Asynchronously records pre-roll and post-roll frames into an H.264 MP4 with +faststart."""
+    def _record_event_clip_async(self, event_id: str, pre_roll_frames: List[np.ndarray], post_roll_seconds: int = 10):
+        """Asynchronously records pre-roll and real-time frames into an H.264 MP4 with dynamic activity continuation."""
         def _recorder():
+            self.is_recording_clip = True
+            self.recording_event_id = event_id
             try:
-                # Synchronize recording frame rate to stream FPS so pre-roll and post-roll match 1.0x real-time speed
+                # Synchronize recording frame rate to stream FPS
                 clip_fps = max(10, min(30, int(round(self.fps)))) if self.fps > 5 else 20
                 frame_interval = 1.0 / clip_fps
-                total_post_frames = int(post_roll_seconds * clip_fps)
 
-                # Determine recording resolution from pre-roll frames
+                cam_settings = getattr(self.camera, 'settings', None)
+                min_rec = getattr(cam_settings, 'min_recording_seconds', 15) if cam_settings else 15
+                max_rec = getattr(cam_settings, 'max_recording_seconds', 300) if cam_settings else 300
+                post_roll = getattr(cam_settings, 'post_roll_seconds', post_roll_seconds) if cam_settings else post_roll_seconds
+                extend_active = getattr(cam_settings, 'extend_while_active', True) if cam_settings else True
+
+                # Determine recording resolution from pre-roll frames or current frame
                 if pre_roll_frames:
                     h, w = pre_roll_frames[0].shape[:2]
+                elif self.latest_frame is not None:
+                    h, w = self.latest_frame.shape[:2]
                 else:
                     w, h = 640, 360
                 w = (w // 2) * 2
                 h = (h // 2) * 2
-                
-                post_roll_frames = []
-                for _ in range(total_post_frames):
-                    time.sleep(frame_interval)
-                    with self.frame_lock:
-                        if self.latest_frame is not None:
-                            post_roll_frames.append(cv2.resize(self.latest_frame, (w, h)))
-                            
-                all_frames = list(pre_roll_frames) + post_roll_frames
-                if not all_frames:
-                    return
-                    
+
                 out_filename = f"{self.camera.id}_{event_id}.mp4"
                 out_path = RECORDINGS_DIR / out_filename
                 temp_out_path = RECORDINGS_DIR / f"tmp_{out_filename}"
-                
+
                 # Retrieve configured hardware backend and encoding parameters
-                cam_settings = getattr(self.camera, 'settings', None)
                 hw_backend = getattr(cam_settings, 'hw_accel_backend', 'auto') if cam_settings else 'auto'
                 preset = getattr(cam_settings, 'encoding_preset', 'ultrafast') if cam_settings else 'ultrafast'
                 crf = getattr(cam_settings, 'encoding_crf', 26) if cam_settings else 26
 
                 encode_args = get_ffmpeg_encode_args(backend=hw_backend, preset=preset, crf=crf)
 
-                # Encode web-compatible H.264 MP4 via FFmpeg pipe with matching -r {clip_fps} and +faststart
+                # Launch FFmpeg pipe process
                 cmd = [
                     'ffmpeg', '-y',
                     '-f', 'rawvideo',
@@ -341,67 +341,96 @@ class CameraStreamWorker:
                     *encode_args,
                     str(temp_out_path)
                 ]
-                
+
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                for f in all_frames:
+
+                # 1. Feed pre-roll buffer frames immediately into encoder
+                total_written = 0
+                for f in pre_roll_frames:
                     if f.shape[:2] != (h, w):
                         f = cv2.resize(f, (w, h))
                     try:
                         proc.stdin.write(f.tobytes())
+                        total_written += 1
                     except (BrokenPipeError, IOError):
                         break
+
+                # 2. Dynamic recording loop: keep recording while people/active motion persist
+                record_start = time.time()
+                last_active_time = record_start
+
+                while self.is_running:
+                    time.sleep(frame_interval)
+                    now = time.time()
+                    elapsed = now - record_start
+
+                    # Grab latest live camera frame
+                    frame_to_write = None
+                    with self.frame_lock:
+                        if self.latest_frame is not None:
+                            frame_to_write = self.latest_frame if self.latest_frame.shape[:2] == (h, w) else cv2.resize(self.latest_frame, (w, h))
+
+                    if frame_to_write is not None:
+                        try:
+                            proc.stdin.write(frame_to_write.tobytes())
+                            total_written += 1
+                        except (BrokenPipeError, IOError):
+                            print(f"FFmpeg stdin broken during event recording for {self.camera.name}")
+                            break
+
+                    # Check for active detections (persons or moving triggers)
+                    is_active = False
+                    if self.last_active_detection_time > 0 and (now - self.last_active_detection_time) < 2.5:
+                        is_active = True
+                    elif any(d.label == "person" for d in getattr(self, 'latest_detections', [])):
+                        is_active = True
+
+                    if is_active:
+                        last_active_time = now
+
+                    # Hard maximum recording limit reached (e.g. 5 minutes)
+                    if elapsed >= max_rec:
+                        print(f"Event clip for {self.camera.name} reached max duration ({max_rec}s, {total_written} frames)")
+                        break
+
+                    # Minimum clip length guarantee
+                    if elapsed < min_rec:
+                        continue
+
+                    # If dynamic extension disabled, stop after fixed post_roll
+                    if not extend_active:
+                        if elapsed >= (min_rec + post_roll):
+                            break
+                        continue
+
+                    # Scene clear check: stop once no people or motion for post_roll seconds
+                    if (now - last_active_time) >= post_roll:
+                        print(f"Scene clear for {post_roll}s on {self.camera.name}. Concluding event recording ({elapsed:.1f}s, {total_written} frames)")
+                        break
+
+                # Finish encoding
                 try:
                     proc.stdin.close()
                 except Exception:
                     pass
                 proc.wait()
 
-                # Robust fallback: if hardware encoder failed (e.g., GPU memory exhaustion or unsupported format),
-                # retry encoding with software libx264 so clip is guaranteed never lost
-                if proc.returncode != 0 and ('h264_nvenc' in encode_args or 'h264_qsv' in encode_args):
-                    fallback_cmd = [
-                        'ffmpeg', '-y',
-                        '-f', 'rawvideo',
-                        '-vcodec', 'rawvideo',
-                        '-s', f'{w}x{h}',
-                        '-pix_fmt', 'bgr24',
-                        '-r', str(clip_fps),
-                        '-i', '-',
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-crf', str(crf),
-                        '-pix_fmt', 'yuv420p',
-                        '-g', '40',
-                        '-movflags', '+faststart',
-                        str(temp_out_path)
-                    ]
-                    fallback_proc = subprocess.Popen(fallback_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                    for f in all_frames:
-                        if f.shape[:2] != (h, w):
-                            f = cv2.resize(f, (w, h))
-                        try:
-                            fallback_proc.stdin.write(f.tobytes())
-                        except (BrokenPipeError, IOError):
-                            break
-                    try:
-                        fallback_proc.stdin.close()
-                    except Exception:
-                        pass
-                    fallback_proc.wait()
-                
                 # Atomically promote temporary file to final output path
-                if temp_out_path.exists():
+                if temp_out_path.exists() and temp_out_path.stat().st_size > 1024:
                     try:
                         if out_path.exists():
                             out_path.unlink()
                         temp_out_path.replace(out_path)
                     except Exception:
                         pass
+                    print(f"Recorded dynamic event clip successfully: {out_filename} ({total_written} frames @ {clip_fps} FPS)")
+                else:
+                    print(f"Warning: Failed to produce valid recording clip {out_filename}")
 
                 # Update DB and notify
                 video_url = f"/api/recordings/{out_filename}"
                 update_event_video_clip(event_id, video_url)
-                
+
                 if self.notification_callback:
                     # Send updated event notification
                     updated_evt = DetectionEvent(
@@ -416,6 +445,9 @@ class CameraStreamWorker:
                     self.notification_callback(updated_evt)
             except Exception as e:
                 print(f"Clip recording error: {e}")
+            finally:
+                self.is_recording_clip = False
+                self.recording_event_id = None
 
         t = threading.Thread(target=_recorder, daemon=True)
         t.start()
@@ -459,7 +491,7 @@ class CameraStreamWorker:
         ).start()
             
         # Spawn clip recording
-        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 5)
+        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 10)
         self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
         return event
 
@@ -695,6 +727,13 @@ class CameraStreamWorker:
                 d for d in evaluated_detections
                 if not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
             ]
+
+            has_active_people_or_motion = any(
+                d.label == "person" or not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
+                for d in evaluated_detections
+            )
+            if has_active_people_or_motion:
+                self.last_active_detection_time = loop_start
             
             min_frames = max(1, getattr(self.camera.settings, 'min_confirmation_frames', 2))
             cooldown = getattr(self.camera.settings, 'alert_cooldown_seconds', 45)
@@ -750,10 +789,14 @@ class CameraStreamWorker:
                 ).start()
                     
                 if self.camera.settings.recording_mode in ['ai_event', 'continuous']:
-                    with self.frame_lock:
-                        pre_roll = list(self.pre_roll_buffer)
-                    post_roll = getattr(self.camera.settings, 'post_roll_seconds', 6)
-                    self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
+                    if self.is_recording_clip:
+                        # Existing clip recording is in progress: keep it alive with ongoing detection
+                        self.last_active_detection_time = loop_start
+                    else:
+                        with self.frame_lock:
+                            pre_roll = list(self.pre_roll_buffer)
+                        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 10)
+                        self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
 
             elapsed = time.time() - loop_start
             sleep_needed = max(0.01, infer_interval - elapsed)

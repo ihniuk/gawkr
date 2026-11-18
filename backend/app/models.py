@@ -63,7 +63,10 @@ class CameraSettings(BaseModel):
     min_confirmation_frames: int = 2   # Require N consecutive frames to confirm real object vs glitch
     min_area_pixels: int = 2500        # Reject small pixel changes, leaves, wind
     pre_roll_seconds: int = 4          # Pre-roll recording seconds before detection
-    post_roll_seconds: int = 6         # Post-roll recording seconds after detection
+    post_roll_seconds: int = 10        # Post-roll recording seconds after detection / inactivity
+    min_recording_seconds: int = 15    # Minimum clip duration for an event
+    max_recording_seconds: int = 300   # Maximum recording duration while activity continues (default 5 mins)
+    extend_while_active: bool = True   # Automatically prolong recording as long as people/movement are in frame
     timelapse_interval_seconds: float = 10.0  # Basic time-lapse capture interval
     timelapse_output_fps: int = 30            # Basic time-lapse playback speed
     timelapse_duration_minutes: int = 0       # 0 = manual stop
