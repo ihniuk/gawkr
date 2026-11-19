@@ -92,6 +92,12 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
   const [auditFilter, setAuditFilter] = useState('all'); // 'all', 'success', 'failed'
   const [auditActionFeedback, setAuditActionFeedback] = useState('');
 
+  // Blocked IPs (Brute-force lockout defense) State
+  const [blockedIps, setBlockedIps] = useState([]);
+  const [isLoadingBlockedIps, setIsLoadingBlockedIps] = useState(false);
+  const [unblockFeedback, setUnblockFeedback] = useState('');
+  const [manualBlockIp, setManualBlockIp] = useState('');
+
   const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
   const loadSettings = async () => {
@@ -234,6 +240,45 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     }
   };
 
+  const loadBlockedIps = async () => {
+    setIsLoadingBlockedIps(true);
+    try {
+      const res = await api.getBlockedIps();
+      setBlockedIps(res?.blocked_ips || []);
+    } catch (err) {
+      console.error('Failed to load blocked IPs:', err);
+    } finally {
+      setIsLoadingBlockedIps(false);
+    }
+  };
+
+  const handleUnblockIp = async (ip) => {
+    try {
+      await api.unblockIp(ip);
+      setUnblockFeedback(`✓ Successfully unblocked ${ip}`);
+      setTimeout(() => setUnblockFeedback(''), 4000);
+      loadBlockedIps();
+      loadLoginAudit();
+    } catch (err) {
+      alert(`Failed to unblock ${ip}: ` + (err.message || err));
+    }
+  };
+
+  const handleManualBlock = async (e) => {
+    e.preventDefault();
+    if (!manualBlockIp.trim()) return;
+    try {
+      await api.manuallyBlockIp(manualBlockIp.trim(), 'Manual block via Control Panel');
+      setManualBlockIp('');
+      setUnblockFeedback(`✓ Blocked ${manualBlockIp.trim()}`);
+      setTimeout(() => setUnblockFeedback(''), 4000);
+      loadBlockedIps();
+      loadLoginAudit();
+    } catch (err) {
+      alert('Failed to block IP: ' + (err.message || err));
+    }
+  };
+
   const formatUserAgent = (ua) => {
     if (!ua) return 'Unknown Client';
     if (ua.includes('Gawkr')) return 'Gawkr Android App';
@@ -281,6 +326,7 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     if (activeTab === 'users') {
       loadUsers();
       loadLoginAudit();
+      loadBlockedIps();
     } else if (activeTab === 'logs') {
       loadSystemLogs();
     }
@@ -3535,6 +3581,145 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                     )}
                   </tbody>
                 </table>
+              </div>
+
+              {/* Blocked IP Addresses Defense Panel */}
+              <div style={{ marginTop: '24px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', paddingTop: '20px' }}>
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '10px',
+                  marginBottom: '14px'
+                }}>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Lock size={17} color="#fb7185" />
+                      <h4 style={{ fontSize: '0.92rem', fontWeight: 700, color: '#fb7185' }}>
+                        Blocked IP Addresses (Auto-Defense: 2 Failed Logins)
+                      </h4>
+                      <span className="hud-chip" style={{
+                        color: blockedIps.length > 0 ? '#fb7185' : 'var(--accent-emerald)',
+                        borderColor: blockedIps.length > 0 ? 'rgba(244, 63, 94, 0.3)' : 'rgba(16, 185, 129, 0.3)'
+                      }}>
+                        {blockedIps.length} {blockedIps.length === 1 ? 'IP Blocked' : 'IPs Blocked'}
+                      </span>
+                    </div>
+                    <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                      IP addresses are automatically blocked after 2 consecutive failed login attempts. Unblock any erroneous locks below.
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {unblockFeedback && (
+                      <span style={{ fontSize: '0.78rem', color: 'var(--accent-emerald)', fontWeight: 600 }}>
+                        {unblockFeedback}
+                      </span>
+                    )}
+                    <button
+                      className="btn-glass"
+                      onClick={loadBlockedIps}
+                      disabled={isLoadingBlockedIps}
+                      style={{ fontSize: '0.74rem', padding: '5px 10px' }}
+                    >
+                      <RefreshCw size={12} className={isLoadingBlockedIps ? 'animate-spin' : ''} /> Refresh
+                    </button>
+                  </div>
+                </div>
+
+                {/* Blocked IPs Table */}
+                <div style={{
+                  background: 'rgba(0, 0, 0, 0.25)',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  borderRadius: '8px',
+                  overflow: 'hidden'
+                }}>
+                  {blockedIps.length === 0 ? (
+                    <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                      <ShieldCheck size={28} color="var(--accent-emerald)" style={{ margin: '0 auto 8px', display: 'block' }} />
+                      No blocked IP addresses. All systems normal.
+                    </div>
+                  ) : (
+                    <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.76rem' }}>
+                      <thead>
+                        <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)', color: 'var(--text-muted)' }}>
+                          <th style={{ padding: '8px 12px' }}>Blocked IP Address</th>
+                          <th style={{ padding: '8px 12px' }}>Failed Attempts</th>
+                          <th style={{ padding: '8px 12px' }}>Reason</th>
+                          <th style={{ padding: '8px 12px' }}>Locked At</th>
+                          <th style={{ padding: '8px 12px', textAlign: 'right' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {blockedIps.map(item => (
+                          <tr key={item.ip_address} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                            <td style={{ padding: '8px 12px', fontFamily: 'monospace', fontWeight: 700, color: '#fb7185' }}>
+                              {item.ip_address}
+                            </td>
+                            <td style={{ padding: '8px 12px' }}>
+                              <span style={{
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                background: 'rgba(244, 63, 94, 0.15)',
+                                color: '#fb7185',
+                                fontWeight: 700,
+                                fontSize: '0.7rem'
+                              }}>
+                                {item.failed_attempts} / 2
+                              </span>
+                            </td>
+                            <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>
+                              {item.reason}
+                            </td>
+                            <td style={{ padding: '8px 12px', color: 'var(--text-muted)' }}>
+                              {item.blocked_at ? new Date(item.blocked_at * 1000).toLocaleString() : '—'}
+                            </td>
+                            <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                              {isAdmin && (
+                                <button
+                                  className="btn-glass"
+                                  onClick={() => handleUnblockIp(item.ip_address)}
+                                  style={{
+                                    fontSize: '0.72rem',
+                                    padding: '4px 10px',
+                                    color: 'var(--accent-emerald)',
+                                    borderColor: 'rgba(16, 185, 129, 0.3)'
+                                  }}
+                                  title="Unblock this IP address"
+                                >
+                                  Unblock IP
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Manual Block Form */}
+                {isAdmin && (
+                  <form onSubmit={handleManualBlock} style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      className="input-glass"
+                      placeholder="Enter IP to manually block (e.g. 192.168.1.50)..."
+                      value={manualBlockIp}
+                      onChange={(e) => setManualBlockIp(e.target.value)}
+                      style={{ fontSize: '0.75rem', padding: '6px 12px', width: '280px' }}
+                    />
+                    <button
+                      type="submit"
+                      className="btn-glass"
+                      disabled={!manualBlockIp.trim()}
+                      style={{ fontSize: '0.74rem', padding: '6px 12px', color: '#fb7185' }}
+                    >
+                      <Lock size={12} /> Block IP Manually
+                    </button>
+                  </form>
+                )}
               </div>
             </div>
           </div>

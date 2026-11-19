@@ -316,3 +316,7 @@ class CredentialVerifyResponse(BaseModel):
     profiles: List[ProfileInfo] = []
     suggested_main_url: str = ""
     suggested_sub_url: str = ""
+
+class BlockIpRequest(BaseModel):
+    ip: str
+    reason: Optional[str] = "Manual block"

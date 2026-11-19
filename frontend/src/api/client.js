@@ -407,5 +407,23 @@ export const api = {
     return apiFetch('/security/login-audit/clear', {
       method: 'POST'
     });
+  },
+
+  // Blocked IPs (Brute-Force Lockout Defense)
+  async getBlockedIps() {
+    return apiFetch('/security/blocked-ips');
+  },
+
+  async unblockIp(ip) {
+    return apiFetch(`/security/blocked-ips/${encodeURIComponent(ip)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  async manuallyBlockIp(ip, reason) {
+    return apiFetch('/security/blocked-ips', {
+      method: 'POST',
+      body: JSON.stringify({ ip, reason })
+    });
   }
 };

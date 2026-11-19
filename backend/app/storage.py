@@ -114,6 +114,17 @@ def init_db():
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_login_timestamp ON login_audit(timestamp);")
 
+    # Blocked IPs table for Brute-Force Defense (Auto-blocks after 2 failed logins)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS blocked_ips (
+        ip_address TEXT PRIMARY KEY,
+        failed_attempts INTEGER DEFAULT 0,
+        blocked_at REAL,
+        reason TEXT DEFAULT 'Excessive failed login attempts',
+        is_blocked INTEGER DEFAULT 1
+    );
+    """)
+
     conn.commit()
     conn.close()
 
@@ -640,5 +651,118 @@ def clear_login_audit_logs():
     cursor.execute("DELETE FROM login_audit;")
     conn.commit()
     conn.close()
+
+# ----------------- BRUTE-FORCE DEFENSE & BLOCKED IPS -----------------
+
+def is_ip_blocked(ip: str) -> bool:
+    """Checks whether an IP address is actively blocked from authentication."""
+    if not ip:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_blocked FROM blocked_ips WHERE ip_address = ?", (ip,))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row and row[0] == 1)
+
+def record_login_failure(ip: str, max_failures: int = 2) -> bool:
+    """
+    Increments failure count for the IP.
+    If failures >= max_failures (2), locks the IP and marks is_blocked = 1.
+    Returns True if the IP is now blocked.
+    """
+    if not ip:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT failed_attempts, is_blocked FROM blocked_ips WHERE ip_address = ?", (ip,))
+    row = cursor.fetchone()
+    now = time.time()
+    
+    if not row:
+        attempts = 1
+        is_blocked = 1 if attempts >= max_failures else 0
+        blocked_time = now if is_blocked else None
+        cursor.execute("""
+        INSERT INTO blocked_ips (ip_address, failed_attempts, blocked_at, reason, is_blocked)
+        VALUES (?, ?, ?, ?, ?)
+        """, (ip, attempts, blocked_time, f"Blocked after {attempts} failed login attempts", is_blocked))
+    else:
+        attempts = (row[0] or 0) + 1
+        is_blocked = 1 if attempts >= max_failures else (row[1] or 0)
+        blocked_time = now if is_blocked else None
+        cursor.execute("""
+        UPDATE blocked_ips 
+        SET failed_attempts = ?, blocked_at = COALESCE(blocked_at, ?), is_blocked = ?,
+            reason = ?
+        WHERE ip_address = ?
+        """, (attempts, blocked_time, is_blocked, f"Blocked after {attempts} failed login attempts", ip))
+        
+    conn.commit()
+    conn.close()
+    return bool(is_blocked == 1)
+
+def reset_ip_failures(ip: str):
+    """Resets failed attempt count on successful login (if not hard-blocked)."""
+    if not ip:
+        return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_blocked FROM blocked_ips WHERE ip_address = ?", (ip,))
+    row = cursor.fetchone()
+    if row and row[0] == 0:
+        cursor.execute("DELETE FROM blocked_ips WHERE ip_address = ?", (ip,))
+        conn.commit()
+    conn.close()
+
+def get_blocked_ips() -> List[Dict[str, Any]]:
+    """Returns all actively blocked IP addresses."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT ip_address, failed_attempts, blocked_at, reason, is_blocked
+    FROM blocked_ips
+    WHERE is_blocked = 1
+    ORDER BY blocked_at DESC
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    return [
+        {
+            "ip_address": r[0],
+            "failed_attempts": r[1],
+            "blocked_at": r[2],
+            "reason": r[3],
+            "is_blocked": bool(r[4])
+        }
+        for r in rows
+    ]
+
+def unblock_ip(ip: str) -> bool:
+    """Unblocks an IP address, clearing its block status and attempt count."""
+    if not ip:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM blocked_ips WHERE ip_address = ?", (ip,))
+    affected = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return affected
+
+def manually_block_ip(ip: str, reason: str = "Manual block via Control Panel") -> bool:
+    """Manually blocks an IP address."""
+    if not ip:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    now = time.time()
+    cursor.execute("""
+    INSERT OR REPLACE INTO blocked_ips (ip_address, failed_attempts, blocked_at, reason, is_blocked)
+    VALUES (?, 2, ?, ?, 1)
+    """, (ip.strip(), now, reason))
+    conn.commit()
+    conn.close()
+    return True
 
 init_db()

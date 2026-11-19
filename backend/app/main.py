@@ -17,10 +17,10 @@ from app.models import (
     CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
     AIMemoryConfig, AIMemoryItem,
-    TestStreamRequest, TestStreamResponse, TimelapseStartRequest
+    TestStreamRequest, TestStreamResponse, TimelapseStartRequest, BlockIpRequest
 )
 from app.auth import (
-    authenticate_user, create_access_token, get_current_user, require_admin,
+    authenticate_user, create_access_token, decode_access_token, get_current_user, require_admin,
     verify_ha_integration_auth,
     create_stream_ticket, verify_stream_ticket,
     list_users, add_new_user, reset_user_password, update_user_role, delete_user
@@ -31,7 +31,8 @@ from app.notifications import notification_manager
 from app.storage import (
     load_recent_events_from_db, delete_event_from_db,
     get_system_settings, save_system_settings, get_storage_disk_stats,
-    record_login_audit, get_login_audit_logs, clear_login_audit_logs
+    record_login_audit, get_login_audit_logs, clear_login_audit_logs,
+    is_ip_blocked, record_login_failure, reset_ip_failures, get_blocked_ips, unblock_ip, manually_block_ip
 )
 from app.ai_vision import test_ai_vision_connection, extract_memory_profile_from_snapshot
 from app.notification_dispatchers import (
@@ -114,11 +115,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gawkr AI-NVR Server", version="1.0.0", lifespan=lifespan)
 
-# Allow CORS for local dev servers
+# Allow CORS for local dev servers and reverse proxies
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -141,15 +142,34 @@ async def login(credentials: UserLogin, request: Request):
     client_ip = extract_client_ip(request)
     user_agent = request.headers.get("user-agent", "Unknown")
 
-    user = authenticate_user(credentials.username, credentials.password)
-    if not user:
-        record_login_audit(credentials.username, client_ip, user_agent, "FAILED", "Incorrect username or password")
-        logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} ({user_agent[:45]})", component="auth")
+    # 1. Enforce automatic brute-force lockout (blocks after 2 failed logins)
+    if is_ip_blocked(client_ip):
+        record_login_audit(credentials.username, client_ip, user_agent, "BLOCKED", "IP blocked due to repeated failed logins")
+        logger.warning(f"Rejected login attempt from blocked IP {client_ip} for username '{credentials.username}'", component="auth")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access Denied: Your IP address ({client_ip}) is currently blocked due to repeated failed login attempts. An administrator can unblock it from the Control Panel."
         )
 
+    user = authenticate_user(credentials.username, credentials.password)
+    if not user:
+        now_blocked = record_login_failure(client_ip, max_failures=2)
+        reason = "Incorrect username or password" + (" (IP blocked after 2 failures)" if now_blocked else " (Attempt 1 of 2)")
+        status_label = "BLOCKED" if now_blocked else "FAILED"
+        record_login_audit(credentials.username, client_ip, user_agent, status_label, reason)
+        logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} (blocked={now_blocked})", component="auth")
+        if now_blocked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 2 failed login attempts. An administrator can unblock it from the Control Panel."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password. Warning: 2 failed attempts will automatically block this IP address."
+        )
+
+    # 2. On successful authentication, reset failed attempts counter
+    reset_ip_failures(client_ip)
     record_login_audit(credentials.username, client_ip, user_agent, "SUCCESS")
     logger.info(f"Successful login for user '{credentials.username}' from {client_ip}", component="auth")
     token = create_access_token({"sub": user["username"], "role": user["role"]})
@@ -345,16 +365,22 @@ async def capture_snapshot(camera_id: str, user: dict = Depends(get_current_user
 
 @app.get("/api/snapshots/{filename}")
 async def get_snapshot_file(filename: str):
-    file_path = SNAPSHOTS_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
+    clean_name = Path(filename).name
+    if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid snapshot filename")
+    file_path = (SNAPSHOTS_DIR / clean_name).resolve()
+    if not file_path.is_relative_to(SNAPSHOTS_DIR.resolve()) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return FileResponse(str(file_path), media_type="image/jpeg")
 
 @app.get("/api/recordings/{filename}")
 async def get_recording_file(filename: str):
     """Serves recorded H.264 MP4 clips with HTTP Range seeking support for smooth web playback."""
-    file_path = RECORDINGS_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
+    clean_name = Path(filename).name
+    if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid recording filename")
+    file_path = (RECORDINGS_DIR / clean_name).resolve()
+    if not file_path.is_relative_to(RECORDINGS_DIR.resolve()) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Recording clip not found or still processing")
     return FileResponse(str(file_path), media_type="video/mp4")
 
@@ -683,6 +709,27 @@ async def clear_login_audit_endpoint(user: dict = Depends(require_admin)):
     logger.info(f"Security login audit trail cleared by user '{user['username']}'", component="security")
     return {"status": "cleared"}
 
+# ----------------- BLOCKED IPS DEFENSE -----------------
+
+@app.get("/api/security/blocked-ips")
+async def get_blocked_ips_endpoint(user: dict = Depends(require_admin)):
+    """Lists all blocked IP addresses with lock reason and timestamp."""
+    return {"blocked_ips": get_blocked_ips()}
+
+@app.delete("/api/security/blocked-ips/{ip:path}")
+async def unblock_ip_endpoint(ip: str, user: dict = Depends(require_admin)):
+    """Unblocks an IP address, clearing failure count and active lock."""
+    success = unblock_ip(ip)
+    logger.info(f"IP address '{ip}' unblocked by user '{user['username']}' (success={success})", component="security")
+    return {"status": "unblocked", "ip": ip, "success": success}
+
+@app.post("/api/security/blocked-ips")
+async def block_ip_endpoint(req: BlockIpRequest, user: dict = Depends(require_admin)):
+    """Manually blocks an IP address."""
+    manually_block_ip(req.ip, req.reason or "Manual block via Control Panel")
+    logger.warning(f"IP address '{req.ip}' manually blocked by user '{user['username']}'", component="security")
+    return {"status": "blocked", "ip": req.ip}
+
 # ----------------- DAILY AI BRIEFING -----------------
 
 @app.get("/api/briefing/today")
@@ -783,6 +830,16 @@ async def ha_sync_discovery(user: dict = Depends(verify_ha_integration_auth)):
 
 @app.websocket("/api/ws/events")
 async def websocket_events_endpoint(websocket: WebSocket):
+    # Verify token from query parameter (?token=...) or Authorization header (Bearer ...)
+    token = websocket.query_params.get("token")
+    if not token:
+        auth_header = websocket.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if not token or not decode_access_token(token):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await notification_manager.connect(websocket)
     try:
         while True:
