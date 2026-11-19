@@ -720,6 +720,7 @@ async def get_blocked_ips_endpoint(user: dict = Depends(require_admin)):
 async def unblock_ip_endpoint(ip: str, user: dict = Depends(require_admin)):
     """Unblocks an IP address, clearing failure count and active lock."""
     success = unblock_ip(ip)
+    record_login_audit(user["username"], ip, "Control Panel", "UNBLOCKED", f"IP address {ip} unblocked by administrator")
     logger.info(f"IP address '{ip}' unblocked by user '{user['username']}' (success={success})", component="security")
     return {"status": "unblocked", "ip": ip, "success": success}
 
@@ -727,6 +728,7 @@ async def unblock_ip_endpoint(ip: str, user: dict = Depends(require_admin)):
 async def block_ip_endpoint(req: BlockIpRequest, user: dict = Depends(require_admin)):
     """Manually blocks an IP address."""
     manually_block_ip(req.ip, req.reason or "Manual block via Control Panel")
+    record_login_audit(user["username"], req.ip, "Control Panel", "BLOCKED", f"Manually blocked: {req.reason}")
     logger.warning(f"IP address '{req.ip}' manually blocked by user '{user['username']}'", component="security")
     return {"status": "blocked", "ip": req.ip}
 

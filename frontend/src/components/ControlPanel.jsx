@@ -223,6 +223,8 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     } finally {
       setIsLoadingAudit(false);
     }
+    // Also keep blocked IPs synchronized with audit
+    loadBlockedIps();
   };
 
   const handleClearLoginAudit = async () => {
@@ -3520,19 +3522,22 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                     ) : (
                       loginAuditData.audit_logs
                         .filter(l => {
-                          if (auditFilter === 'success') return l.status === 'SUCCESS';
-                          if (auditFilter === 'failed') return l.status === 'FAILED';
+                          if (auditFilter === 'success') return l.status === 'SUCCESS' || l.status === 'UNBLOCKED';
+                          if (auditFilter === 'failed') return l.status === 'FAILED' || l.status === 'BLOCKED';
                           return true;
                         })
                         .map(log => {
                           const isLan = isPrivateIp(log.ip_address);
-                          const isFailed = log.status === 'FAILED';
+                          const isBlocked = log.status === 'BLOCKED';
+                          const isUnblocked = log.status === 'UNBLOCKED';
+                          const isFailed = log.status === 'FAILED' || isBlocked;
+                          const isCurrentlyBlocked = blockedIps.some(b => b.ip_address === log.ip_address);
                           const timeStr = new Date(log.timestamp * 1000).toLocaleString();
 
                           return (
                             <tr key={log.id} style={{
                               borderBottom: '1px solid rgba(255, 255, 255, 0.04)',
-                              background: isFailed ? 'rgba(244, 63, 94, 0.04)' : 'transparent'
+                              background: isBlocked && isCurrentlyBlocked ? 'rgba(244, 63, 94, 0.08)' : isFailed ? 'rgba(244, 63, 94, 0.03)' : 'transparent'
                             }}>
                               <td style={{ padding: '8px 10px', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
                                 {timeStr}
@@ -3560,17 +3565,71 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                                 {formatUserAgent(log.user_agent)}
                               </td>
                               <td style={{ padding: '8px 10px' }}>
-                                <span style={{
-                                  fontSize: '0.72rem',
-                                  fontWeight: 700,
-                                  display: 'inline-flex',
-                                  alignItems: 'center',
-                                  gap: '4px',
-                                  color: isFailed ? '#fb7185' : 'var(--accent-emerald)'
-                                }}>
-                                  {isFailed ? <ShieldAlert size={12} /> : <ShieldCheck size={12} />}
-                                  {log.status}
-                                </span>
+                                {isBlocked ? (
+                                  isCurrentlyBlocked ? (
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                      <span style={{
+                                        fontSize: '0.72rem',
+                                        fontWeight: 700,
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '4px',
+                                        color: '#fb7185'
+                                      }}>
+                                        <Lock size={12} /> BLOCKED
+                                      </span>
+                                      {isAdmin && (
+                                        <button
+                                          className="btn-glass"
+                                          onClick={() => handleUnblockIp(log.ip_address)}
+                                          style={{
+                                            fontSize: '0.65rem',
+                                            padding: '1px 6px',
+                                            color: 'var(--accent-emerald)',
+                                            borderColor: 'rgba(16, 185, 129, 0.35)'
+                                          }}
+                                          title={`Unblock IP ${log.ip_address}`}
+                                        >
+                                          Unblock
+                                        </button>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <span style={{
+                                      fontSize: '0.72rem',
+                                      fontWeight: 600,
+                                      display: 'inline-flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      color: 'var(--accent-emerald)'
+                                    }}>
+                                      <ShieldCheck size={12} /> Unblocked (Resolved)
+                                    </span>
+                                  )
+                                ) : isUnblocked ? (
+                                  <span style={{
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    color: 'var(--accent-cyan)'
+                                  }}>
+                                    <ShieldCheck size={12} /> UNBLOCKED
+                                  </span>
+                                ) : (
+                                  <span style={{
+                                    fontSize: '0.72rem',
+                                    fontWeight: 700,
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    color: isFailed ? '#fb7185' : 'var(--accent-emerald)'
+                                  }}>
+                                    {isFailed ? <ShieldAlert size={12} /> : <ShieldCheck size={12} />}
+                                    {log.status}
+                                  </span>
+                                )}
                               </td>
                               <td style={{ padding: '8px 10px', color: isFailed ? '#fb7185' : 'var(--text-muted)', fontSize: '0.72rem' }}>
                                 {log.failure_reason || '—'}
