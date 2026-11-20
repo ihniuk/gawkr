@@ -76,7 +76,18 @@ def detect_hardware_capabilities() -> Dict[str, Any]:
         except Exception:
             pass
 
-    has_nvenc = "h264_nvenc" in available_encoders and nvidia_info["available"]
+    has_nvenc = False
+    if "h264_nvenc" in available_encoders and nvidia_info["available"]:
+        try:
+            chk = subprocess.run(
+                ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.01:size=64x64:rate=10', '-c:v', 'h264_nvenc', '-f', 'null', '-'],
+                capture_output=True,
+                timeout=2
+            )
+            has_nvenc = (chk.returncode == 0)
+        except Exception:
+            has_nvenc = False
+
     has_nvdec = "h264_cuvid" in available_decoders and nvidia_info["available"]
     has_qsv = "h264_qsv" in available_encoders
     has_x264 = "libx264" in available_encoders

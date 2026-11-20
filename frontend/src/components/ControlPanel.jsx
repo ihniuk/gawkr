@@ -10,9 +10,27 @@ import {
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
 import { evaluatePasswordStrength } from '../utils/security';
+import DiscoveryModal from './DiscoveryModal';
 
-export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, onClearInitialMemoryData }) {
-  const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'ai_memory', 'notifications', 'users'
+export default function ControlPanel({ 
+  isAdmin, 
+  currentUser, 
+  initialTab = 'cameras',
+  onTabChange,
+  initialMemoryData, 
+  onClearInitialMemoryData,
+  cameras = [],
+  onCameraAdded,
+  onRefreshCameras,
+  onOpenAiSettings
+}) {
+  const [activeTab, setActiveTab] = useState(initialTab || 'cameras');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [settings, setSettings] = useState(null);
   const [diskStats, setDiskStats] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -914,6 +932,27 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
             flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
+            background: activeTab === 'cameras' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'cameras' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => {
+            setActiveTab('cameras');
+            if (onTabChange) onTabChange('cameras');
+          }}
+        >
+          <Radio size={14} /> Camera Discovery
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 120px',
+            border: 'none',
+            borderRadius: '8px',
             background: activeTab === 'storage' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
             color: activeTab === 'storage' ? 'var(--accent-cyan)' : 'var(--text-muted)',
             fontWeight: 700,
@@ -1034,6 +1073,127 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
           <Terminal size={14} /> System Logs
         </button>
       </div>
+
+      {/* ----------------- TAB 0: CAMERA DISCOVERY & SETUP ----------------- */}
+      {activeTab === 'cameras' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Header Panel */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '12px'
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Radio size={20} color="var(--accent-cyan)" />
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Network Camera Discovery & Setup</h3>
+                  <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>
+                    {cameras.length} {cameras.length === 1 ? 'Camera' : 'Cameras'} Configured
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Locate ONVIF and RTSP video feeds across the local network, test streaming profiles, and bind cameras to the live surveillance matrix.
+                </p>
+              </div>
+
+              {onRefreshCameras && (
+                <button
+                  className="btn-glass"
+                  onClick={onRefreshCameras}
+                  style={{ fontSize: '0.76rem', padding: '6px 12px' }}
+                >
+                  <RefreshCw size={13} /> Refresh Cameras
+                </button>
+              )}
+            </div>
+
+            {/* Currently Configured Cameras Summary Cards */}
+            {cameras && cameras.length > 0 && (
+              <div style={{
+                marginTop: '16px',
+                paddingTop: '16px',
+                borderTop: '1px solid rgba(255, 255, 255, 0.08)'
+              }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Configured Surveillance Cameras
+                </div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                  gap: '10px'
+                }}>
+                  {cameras.map(cam => (
+                    <div
+                      key={cam.id}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.03)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        borderRadius: '10px',
+                        padding: '12px 14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.86rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{
+                            width: '8px',
+                            height: '8px',
+                            borderRadius: '50%',
+                            background: cam.is_online ? 'var(--accent-emerald)' : '#fb7185',
+                            display: 'inline-block'
+                          }} />
+                          {cam.name}
+                        </div>
+                        <span style={{
+                          fontSize: '0.66rem',
+                          fontFamily: 'monospace',
+                          padding: '1px 5px',
+                          borderRadius: '4px',
+                          background: 'rgba(255, 255, 255, 0.06)',
+                          color: 'var(--text-muted)'
+                        }}>
+                          {cam.vendor || 'IP Cam'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.74rem', fontFamily: 'monospace', color: 'var(--accent-cyan)' }}>
+                        {cam.ip}:{cam.port || 554}
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cam.main_stream_url}>
+                        {cam.main_stream_url}
+                      </div>
+                      {onOpenAiSettings && (
+                        <div style={{ marginTop: '4px', display: 'flex', justifyContent: 'flex-end' }}>
+                          <button
+                            className="btn-glass"
+                            onClick={() => onOpenAiSettings(cam)}
+                            style={{ fontSize: '0.68rem', padding: '3px 8px' }}
+                          >
+                            <Sliders size={11} /> Settings
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Embedded Network Scanner & Discovery Engine */}
+          <DiscoveryModal
+            embedded={true}
+            onCameraAdded={(newCam) => {
+              if (onCameraAdded) onCameraAdded(newCam);
+              if (onRefreshCameras) onRefreshCameras();
+            }}
+          />
+        </div>
+      )}
 
       {/* ----------------- TAB 1: STORAGE & DIRECTORIES ----------------- */}
       {activeTab === 'storage' && (
@@ -1749,7 +1909,7 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                   <input
                     type="text"
                     className="glass-input"
-                    value={settings.ai_vision.base_url || 'http://localhost:11434'}
+                    value={settings.ai_vision.base_url || 'http://host.docker.internal:11434'}
                     onChange={(e) => setSettings({
                       ...settings,
                       ai_vision: { ...settings.ai_vision, base_url: e.target.value }

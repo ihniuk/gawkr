@@ -1,12 +1,57 @@
 import base64
 import json
 import time
+import re
 from pathlib import Path
 import requests
 import cv2
 import numpy as np
 from typing import Dict, Any, Optional
 from app.models import AIVisionConfig
+
+def _clean_vision_boilerplate(text: str) -> str:
+    """Strips preamble filler, meta-descriptions, and redundant negative clauses from vision LLM output."""
+    if not text:
+        return text
+    t = text.strip()
+    
+    # Strip common leading AI vision preamble
+    patterns = [
+        r'^(the\s+(image|photo|picture|surveillance\s+snapshot|screenshot|scene)\s+(is\s+a\s+[^.]+?\s+(that\s+depicts|depicting|showing)|shows|depicts|features|presents|appears\s+to\s+be|is)\s*:?\s*)',
+        r'^(this\s+(image|photo|picture|surveillance\s+snapshot)\s+(shows|depicts|features|is)\s*:?\s*)',
+        r'^(in\s+this\s+(image|photo|picture|frame|snapshot),\s*)',
+        r'^(it\s+(features|shows|depicts)\s+)'
+    ]
+    for p in patterns:
+        t = re.sub(p, '', t, flags=re.IGNORECASE).strip()
+    
+    # Strip redundant absence and filler chatter
+    t = re.sub(r'\s*there(\s+is|\'?s)?\s+no\s+(indication|sign|evidence)\s+of\s+any\s+[^.]*\.?', '', t, flags=re.IGNORECASE).strip()
+    t = re.sub(r'\s*the\s+(car|vehicle)\s+is\s+stationary[^.]*\.?', '', t, flags=re.IGNORECASE).strip()
+    t = re.sub(r'\s*the\s+(street|scene|area)\s+appears\s+to\s+be\s+safe[^.]*\.?', '', t, flags=re.IGNORECASE).strip()
+    t = re.sub(r'\s*and\s+(there\s+are\s+)?no\s+recognizable\s+(courier|delivery|known\s+entities)[^.]*\.?', '', t, flags=re.IGNORECASE).strip()
+
+    # Clean trailing threat verdict redundancy if at end of sentence
+    t = re.sub(r'[\s.]*(the\s+)?(safety\s+)?threat\s+(level|assessment)\s+(is\s+|appears\s+to\s+be\s+)?\[?(safe|suspicious|threat)\]?\.?$', '.', t, flags=re.IGNORECASE).strip()
+    
+    # Normalize spacing
+    t = ' '.join(t.split()).strip()
+
+    # Capitalize first letter
+    if t and t[0].islower():
+        t = t[0].upper() + t[1:]
+    return t
+
+def _get_ollama_base_url(config: AIVisionConfig) -> str:
+    """Resolves the proper Ollama API endpoint, automatically routing localhost to host.docker.internal in Docker."""
+    raw = (config.base_url or "").strip().rstrip('/')
+    if not raw:
+        if Path('/.dockerenv').exists() or Path('/run/.containerenv').exists():
+            return "http://host.docker.internal:11434"
+        return "http://localhost:11434"
+    if Path('/.dockerenv').exists() or Path('/run/.containerenv').exists():
+        raw = raw.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+    return raw
 
 def encode_image_base64(image_input) -> str:
     """Encodes a numpy ndarray frame or file path into an optimized base64 string (max 768px for sub-second API upload)."""
@@ -93,9 +138,16 @@ def analyze_snapshot_with_ai(
                 mem_lines.append(f"- [{category}: {name}] Visual cues: {cues}.{note_str} (Threat: [{threat}])")
             
             mem_lines.append(
-                "CRITICAL: When recognized, refer to them directly (e.g. 'Amazon delivery driver', 'Royal Mail postman', 'Dave (Resident)') instead of a generic 'unidentified person' or 'unknown vehicle'."
+                "CRITICAL: Only match an entity if the specific visual cues (e.g. logos, uniforms, vehicle models) are CLEARLY visible in the frame. If the subject does NOT match, describe the person and vehicle objectively without using the entity name."
             )
             prompt_parts.append("\n".join(mem_lines))
+
+    prompt_parts.append(
+        "\nSTYLE & BREVITY INSTRUCTIONS:\n"
+        "- Be direct and concise: maximum 1 to 2 sentences (under 25 words).\n"
+        "- Do NOT include preamble like 'The image is a photo that depicts', 'This is a snapshot', or describe image quality.\n"
+        "- Do NOT list things that are missing or absent (e.g. do not say 'no people or vehicles in motion')."
+    )
 
     prompt = "\n".join(prompt_parts)
 
@@ -142,6 +194,7 @@ def analyze_snapshot_with_ai(
             data = resp.json()
             text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
             threat = _parse_threat_level(text)
+            text = _clean_vision_boilerplate(text)
             return {"description": text, "threat_level": threat}
 
         elif config.provider == "openai" or config.provider == "custom":
@@ -177,17 +230,22 @@ def analyze_snapshot_with_ai(
             data = resp.json()
             text = data["choices"][0]["message"]["content"].strip()
             threat = _parse_threat_level(text)
+            text = _clean_vision_boilerplate(text)
             return {"description": text, "threat_level": threat}
 
         elif config.provider == "ollama":
-            # Local Ollama Multimodal Vision (llava / llama3.2-vision)
-            base = config.base_url.rstrip('/') if config.base_url else "http://localhost:11434"
+            # Local Ollama Multimodal Vision (llava / moondream / llama3.2-vision)
+            base = _get_ollama_base_url(config)
             url = f"{base}/api/generate"
             payload = {
-                "model": config.model_name or "llama3.2-vision",
+                "model": config.model_name or "llava",
                 "prompt": prompt,
                 "images": [b64_img],
-                "stream": False
+                "stream": False,
+                "options": {
+                    "num_predict": 75,
+                    "temperature": 0.2
+                }
             }
             resp = requests.post(url, json=payload, timeout=30)
             if resp.status_code != 200:
@@ -198,6 +256,7 @@ def analyze_snapshot_with_ai(
             data = resp.json()
             text = data.get("response", "").strip()
             threat = _parse_threat_level(text)
+            text = _clean_vision_boilerplate(text)
             return {"description": text, "threat_level": threat}
 
     except requests.Timeout:
@@ -225,7 +284,11 @@ def _parse_threat_level(text: str) -> str:
     if "[safe]" in lower or "verdict: safe" in lower or "assessment: safe" in lower or "safety threat:** safe" in lower or "safety threat: safe" in lower:
         return "Safe"
 
-    # 2. Keywords
+    # 2. Check for explicit safe statements before raw keyword search
+    if any(p in lower for p in ["no suspicious", "not suspicious", "no sign of any suspicious", "no threat", "threat level is low", "threat level of this image is low", "no safety threat", "not threatening", "threat: low", "appears to be safe"]):
+        return "Safe"
+
+    # 3. Keywords
     if "weapon" in lower or "intruder" in lower or "armed" in lower or "break-in" in lower or "burglary" in lower:
         return "Threat"
     if "suspicious" in lower or "caution" in lower or "loitering" in lower or "prowling" in lower or "lurking" in lower:
@@ -322,10 +385,10 @@ def extract_memory_profile_from_snapshot(
                 data = resp.json()
                 raw_text = data["choices"][0]["message"]["content"].strip()
         elif config.provider == "ollama":
-            base = config.base_url.rstrip('/') if config.base_url else "http://localhost:11434"
+            base = _get_ollama_base_url(config)
             url = f"{base}/api/generate"
             payload = {
-                "model": config.model_name or "llama3.2-vision",
+                "model": config.model_name or "moondream",
                 "prompt": prompt,
                 "images": [b64_img],
                 "stream": False

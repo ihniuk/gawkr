@@ -158,13 +158,6 @@ export default function Navbar({
 
         {/* Right Actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          {user && isAdmin && currentTab === 'live' && (
-            <button className="btn-primary" onClick={onOpenDiscovery} style={{ padding: isMobile ? '6px 10px' : '8px 14px', fontSize: isMobile ? '0.75rem' : '0.85rem' }}>
-              <Radio size={14} />
-              <span>{isMobile ? 'Scan' : 'Discover Cameras'}</span>
-            </button>
-          )}
-
           {/* Layout Switcher (Visible only when logged in) */}
           {user && !isMobile && currentTab === 'live' && (
             <div style={{

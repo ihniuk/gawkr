@@ -6,10 +6,11 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 
-export default function DiscoveryModal({ onClose, onCameraAdded }) {
+export default function DiscoveryModal({ onClose, onCameraAdded, embedded = false }) {
   const [isScanning, setIsScanning] = useState(false);
   const [discoveredDevices, setDiscoveredDevices] = useState([]);
   const [hasScanned, setHasScanned] = useState(false);
+  const [successMsg, setSuccessMsg] = useState('');
   
   // Selected device verification state
   const [selectedDevice, setSelectedDevice] = useState(null);
@@ -32,6 +33,7 @@ export default function DiscoveryModal({ onClose, onCameraAdded }) {
   const handleScan = async () => {
     setIsScanning(true);
     setErrorMsg('');
+    setSuccessMsg('');
     try {
       const res = await api.scanNetwork();
       setDiscoveredDevices(res.devices || []);
@@ -105,6 +107,8 @@ export default function DiscoveryModal({ onClose, onCameraAdded }) {
 
   const handleAddCamera = async () => {
     if (!selectedDevice || !verifyResult) return;
+    setErrorMsg('');
+    setSuccessMsg('');
     try {
       const newCam = await api.createCamera({
         name: cameraName || `${selectedDevice.vendor} Camera`,
@@ -119,14 +123,23 @@ export default function DiscoveryModal({ onClose, onCameraAdded }) {
         model: verifyResult.model || selectedDevice.model,
         is_simulation: false
       });
-      onCameraAdded(newCam);
-      onClose();
+      if (onCameraAdded) onCameraAdded(newCam);
+      setSuccessMsg(`✓ Successfully added "${newCam.name}" to the Surveillance Matrix!`);
+      setSelectedDevice(null);
+      setVerifyResult(null);
+      setSelectedMainStream('');
+      setSelectedSubStream('');
+      if (!embedded && onClose) {
+        onClose();
+      }
     } catch (err) {
       setErrorMsg(err.message || 'Failed to add camera');
     }
   };
 
   const handleAddDemoCamera = async () => {
+    setErrorMsg('');
+    setSuccessMsg('');
     try {
       const demoCam = await api.createCamera({
         name: `High-Speed AI Camera ${Math.floor(Math.random() * 90 + 10)}`,
@@ -141,44 +154,74 @@ export default function DiscoveryModal({ onClose, onCameraAdded }) {
         model: "M3058-PLVE Panoramic",
         is_simulation: true
       });
-      onCameraAdded(demoCam);
-      onClose();
+      if (onCameraAdded) onCameraAdded(demoCam);
+      setSuccessMsg(`✓ Successfully added test camera "${demoCam.name}" to the Surveillance Matrix!`);
+      if (!embedded && onClose) {
+        onClose();
+      }
     } catch (err) {
       setErrorMsg(err.message);
     }
   };
 
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '780px' }}>
-        {/* Header */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <div style={{
-              width: '38px',
-              height: '38px',
-              borderRadius: '10px',
-              background: 'rgba(6, 182, 212, 0.15)',
-              border: '1px solid rgba(6, 182, 212, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
-              <Radio size={20} color="var(--accent-cyan)" />
-            </div>
-            <div>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Local Network Camera Discovery</h3>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                Point-and-click ONVIF & RTSP detection with stream profile selection
-              </p>
-            </div>
+  const content = (
+    <div
+      className={embedded ? "glass-panel" : "modal-content"}
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        maxWidth: embedded ? '100%' : '780px',
+        borderRadius: embedded ? '14px' : undefined,
+        padding: embedded ? '24px' : undefined,
+        border: embedded ? '1px solid rgba(255, 255, 255, 0.08)' : undefined
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{
+            width: '38px',
+            height: '38px',
+            borderRadius: '10px',
+            background: 'rgba(6, 182, 212, 0.15)',
+            border: '1px solid rgba(6, 182, 212, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center'
+          }}>
+            <Radio size={20} color="var(--accent-cyan)" />
           </div>
+          <div>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 700 }}>Local Network Camera Discovery</h3>
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              Point-and-click ONVIF & RTSP detection with stream profile selection
+            </p>
+          </div>
+        </div>
+        {!embedded && onClose && (
           <button className="btn-glass" onClick={onClose} style={{ padding: '6px' }}>
             <X size={16} />
           </button>
-        </div>
+        )}
+      </div>
 
-        {errorMsg && (
+      {successMsg && (
+        <div style={{
+          background: 'rgba(16, 185, 129, 0.12)',
+          border: '1px solid rgba(16, 185, 129, 0.3)',
+          color: 'var(--accent-emerald)',
+          padding: '10px 14px',
+          borderRadius: '8px',
+          fontSize: '0.82rem',
+          marginBottom: '14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px'
+        }}>
+          <CheckCircle size={16} /> {successMsg}
+        </div>
+      )}
+
+      {errorMsg && (
           <div style={{
             background: 'rgba(244, 63, 94, 0.12)',
             border: '1px solid rgba(244, 63, 94, 0.3)',
@@ -611,6 +654,15 @@ export default function DiscoveryModal({ onClose, onCameraAdded }) {
           </div>
         )}
       </div>
+  );
+
+  if (embedded) {
+    return content;
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      {content}
     </div>
   );
 }
