@@ -211,6 +211,7 @@ export default function ClipReviewPage({
               <option value="person">Person</option>
               <option value="car">Vehicle / Car</option>
               <option value="dog">Dog / Cat</option>
+              <option value="timelapse">Time-Lapse</option>
             </select>
           </div>
 
@@ -446,12 +447,12 @@ export default function ClipReviewPage({
                             fontFamily: 'var(--font-mono)',
                             padding: '2px 6px',
                             borderRadius: '4px',
-                            background: obj.label === 'person' ? 'rgba(6, 182, 212, 0.25)' : 'rgba(245, 158, 11, 0.25)',
-                            color: obj.label === 'person' ? '#38bdf8' : '#fbbf24',
+                            background: obj.label === 'timelapse' ? 'rgba(168, 85, 247, 0.28)' : obj.label === 'person' ? 'rgba(6, 182, 212, 0.25)' : 'rgba(245, 158, 11, 0.25)',
+                            color: obj.label === 'timelapse' ? '#d8b4fe' : obj.label === 'person' ? '#38bdf8' : '#fbbf24',
                             border: '1px solid rgba(255,255,255,0.08)'
                           }}
                         >
-                          {obj.label.toUpperCase()} {Math.round(obj.confidence * 100)}%
+                          {obj.label === 'timelapse' ? 'TIME-LAPSE' : `${obj.label.toUpperCase()} ${Math.round(obj.confidence * 100)}%`}
                         </span>
                       ))}
                     </div>
@@ -597,13 +598,13 @@ export default function ClipReviewPage({
                             <span style={{
                               fontSize: '0.64rem',
                               fontFamily: 'var(--font-mono)',
-                              background: evt.video_clip_url ? 'rgba(6, 182, 212, 0.9)' : 'rgba(255, 255, 255, 0.12)',
+                              background: evt.objects?.some(o => o.label === 'timelapse') ? 'rgba(168, 85, 247, 0.9)' : evt.video_clip_url ? 'rgba(6, 182, 212, 0.9)' : 'rgba(255, 255, 255, 0.12)',
                               color: '#fff',
                               padding: '2px 6px',
                               borderRadius: '4px',
                               fontWeight: 700
                             }}>
-                              {evt.video_clip_url ? 'MP4 CLIP' : 'SNAPSHOT'}
+                              {evt.objects?.some(o => o.label === 'timelapse') ? 'TIME-LAPSE' : evt.video_clip_url ? 'MP4 CLIP' : 'SNAPSHOT'}
                             </span>
                           </div>
                         </div>
@@ -646,12 +647,12 @@ export default function ClipReviewPage({
                                   fontFamily: 'var(--font-mono)',
                                   padding: '1px 6px',
                                   borderRadius: '4px',
-                                  background: obj.label === 'person' ? 'rgba(6, 182, 212, 0.2)' : 'rgba(245, 158, 11, 0.2)',
-                                  color: obj.label === 'person' ? '#38bdf8' : '#fbbf24',
+                                  background: obj.label === 'timelapse' ? 'rgba(168, 85, 247, 0.25)' : obj.label === 'person' ? 'rgba(6, 182, 212, 0.2)' : 'rgba(245, 158, 11, 0.2)',
+                                  color: obj.label === 'timelapse' ? '#d8b4fe' : obj.label === 'person' ? '#38bdf8' : '#fbbf24',
                                   border: '1px solid rgba(255,255,255,0.06)'
                                 }}
                               >
-                                {obj.label.toUpperCase()} {Math.round(obj.confidence * 100)}%
+                                {obj.label === 'timelapse' ? 'TIME-LAPSE' : `${obj.label.toUpperCase()} ${Math.round(obj.confidence * 100)}%`}
                               </span>
                             ))}
                           </div>

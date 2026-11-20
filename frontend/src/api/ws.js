@@ -1,3 +1,5 @@
+import { authStorage } from './client';
+
 export class NvrWebSocket {
   constructor(onMessage) {
     this.onMessage = onMessage;
@@ -13,7 +15,9 @@ export class NvrWebSocket {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const wsUrl = `${protocol}//${host}/api/ws/events`;
+    const token = authStorage.getToken();
+    const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${protocol}//${host}/api/ws/events${tokenQuery}`;
 
     try {
       this.ws = new WebSocket(wsUrl);

@@ -218,6 +218,23 @@ export const api = {
     });
   },
 
+  async startTimelapse(id, options) {
+    return apiFetch(`/cameras/${id}/timelapse/start`, {
+      method: 'POST',
+      body: JSON.stringify(options)
+    });
+  },
+
+  async stopTimelapse(id, compile = true) {
+    return apiFetch(`/cameras/${id}/timelapse/stop?compile=${compile}`, {
+      method: 'POST'
+    });
+  },
+
+  async getTimelapseStatus(id) {
+    return apiFetch(`/cameras/${id}/timelapse/status`);
+  },
+
   async getCameraTelemetry(id) {
     return apiFetch(`/cameras/${id}/telemetry`);
   },
@@ -389,6 +406,24 @@ export const api = {
   async clearLoginAudit() {
     return apiFetch('/security/login-audit/clear', {
       method: 'POST'
+    });
+  },
+
+  // Blocked IPs (Brute-Force Lockout Defense)
+  async getBlockedIps() {
+    return apiFetch('/security/blocked-ips');
+  },
+
+  async unblockIp(ip) {
+    return apiFetch(`/security/blocked-ips/${encodeURIComponent(ip)}`, {
+      method: 'DELETE'
+    });
+  },
+
+  async manuallyBlockIp(ip, reason) {
+    return apiFetch('/security/blocked-ips', {
+      method: 'POST',
+      body: JSON.stringify({ ip, reason })
     });
   }
 };

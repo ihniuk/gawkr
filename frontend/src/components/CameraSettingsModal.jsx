@@ -37,6 +37,10 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
   const [minFrames, setMinFrames] = useState(camera.settings?.min_confirmation_frames || 4);
   const [aiEnabled, setAiEnabled] = useState(camera.settings?.ai_enabled ?? true);
   const [recordingMode, setRecordingMode] = useState(camera.settings?.recording_mode || 'ai_event');
+  const [minRecordingSeconds, setMinRecordingSeconds] = useState(camera.settings?.min_recording_seconds || 15);
+  const [maxRecordingSeconds, setMaxRecordingSeconds] = useState(camera.settings?.max_recording_seconds || 300);
+  const [postRollSeconds, setPostRollSeconds] = useState(camera.settings?.post_roll_seconds || 10);
+  const [extendWhileActive, setExtendWhileActive] = useState(camera.settings?.extend_while_active ?? true);
   const [enabledClasses, setEnabledClasses] = useState(
     camera.settings?.enabled_classes || ['person', 'car', 'motorcycle', 'dog', 'cat']
   );
@@ -140,6 +144,10 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
           min_confirmation_frames: Number(minFrames),
           ai_enabled: aiEnabled,
           recording_mode: recordingMode,
+          min_recording_seconds: Number(minRecordingSeconds),
+          max_recording_seconds: Number(maxRecordingSeconds),
+          post_roll_seconds: Number(postRollSeconds),
+          extend_while_active: Boolean(extendWhileActive),
           enabled_classes: enabledClasses,
           zones: zones,
           hw_accel_backend: hwAccelBackend,
@@ -899,6 +907,94 @@ export default function CameraSettingsModal({ camera, onClose, onSaveSuccess }) 
                 </div>
               ))}
             </div>
+
+            {recordingMode !== 'disabled' && (
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '8px',
+                padding: '14px',
+                marginBottom: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '14px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 600, color: '#f3e8ff' }}>
+                      Dynamic Activity Prolongation
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      Keep recording automatically as long as people or active motion remain in frame.
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={extendWhileActive}
+                    onChange={(e) => setExtendWhileActive(e.target.checked)}
+                    style={{ width: '18px', height: '18px', accentColor: '#10b981', cursor: 'pointer' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                  {/* Min Recording Duration */}
+                  <div style={{ background: 'rgba(0,0,0,0.25)', padding: '10px', borderRadius: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', marginBottom: '4px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Min Clip Length</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)', fontWeight: 600 }}>{minRecordingSeconds}s</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="10"
+                      max="60"
+                      step="5"
+                      value={minRecordingSeconds}
+                      onChange={(e) => setMinRecordingSeconds(parseInt(e.target.value))}
+                      style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
+                    />
+                    <div style={{ fontSize: '0.66rem', color: 'var(--text-dim)', marginTop: '2px' }}>Guaranteed minimum footage</div>
+                  </div>
+
+                  {/* Max Recording Duration */}
+                  <div style={{ background: 'rgba(0,0,0,0.25)', padding: '10px', borderRadius: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', marginBottom: '4px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Max Duration</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: '#a855f7', fontWeight: 600 }}>
+                        {maxRecordingSeconds >= 60 ? `${Math.round(maxRecordingSeconds / 60)}m (${maxRecordingSeconds}s)` : `${maxRecordingSeconds}s`}
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="60"
+                      max="600"
+                      step="30"
+                      value={maxRecordingSeconds}
+                      onChange={(e) => setMaxRecordingSeconds(parseInt(e.target.value))}
+                      style={{ width: '100%', accentColor: '#a855f7' }}
+                    />
+                    <div style={{ fontSize: '0.66rem', color: 'var(--text-dim)', marginTop: '2px' }}>Maximum clip length while active (up to 10m)</div>
+                  </div>
+
+                  {/* Post-Roll Buffer */}
+                  <div style={{ background: 'rgba(0,0,0,0.25)', padding: '10px', borderRadius: '6px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.74rem', marginBottom: '4px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Exit Buffer (Post-Roll)</span>
+                      <span style={{ fontFamily: 'var(--font-mono)', color: '#10b981', fontWeight: 600 }}>{postRollSeconds}s</span>
+                    </div>
+                    <input
+                      type="range"
+                      min="5"
+                      max="30"
+                      step="1"
+                      value={postRollSeconds}
+                      onChange={(e) => setPostRollSeconds(parseInt(e.target.value))}
+                      style={{ width: '100%', accentColor: '#10b981' }}
+                    />
+                    <div style={{ fontSize: '0.66rem', color: 'var(--text-dim)', marginTop: '2px' }}>Buffer recorded after people leave frame</div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div style={{ background: 'rgba(255, 255, 255, 0.02)', padding: '12px', borderRadius: '8px', fontSize: '0.76rem', color: 'var(--text-muted)' }}>
               Note: Global retention days and storage limits are configured in the <strong>Control Panel</strong>. The background retention worker automatically purges footage to prevent disk overflow.

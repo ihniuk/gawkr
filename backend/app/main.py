@@ -17,10 +17,11 @@ from app.models import (
     CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
     AIMemoryConfig, AIMemoryItem,
-    TestStreamRequest, TestStreamResponse
+    TestStreamRequest, TestStreamResponse, TimelapseStartRequest, BlockIpRequest
 )
 from app.auth import (
-    authenticate_user, create_access_token, get_current_user, require_admin,
+    authenticate_user, create_access_token, decode_access_token, get_current_user, require_admin,
+    verify_ha_integration_auth,
     create_stream_ticket, verify_stream_ticket,
     list_users, add_new_user, reset_user_password, update_user_role, delete_user
 )
@@ -30,7 +31,8 @@ from app.notifications import notification_manager
 from app.storage import (
     load_recent_events_from_db, delete_event_from_db,
     get_system_settings, save_system_settings, get_storage_disk_stats,
-    record_login_audit, get_login_audit_logs, clear_login_audit_logs
+    record_login_audit, get_login_audit_logs, clear_login_audit_logs,
+    is_ip_blocked, record_login_failure, reset_ip_failures, get_blocked_ips, unblock_ip, manually_block_ip
 )
 from app.ai_vision import test_ai_vision_connection, extract_memory_profile_from_snapshot
 from app.notification_dispatchers import (
@@ -48,16 +50,49 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize camera manager with the active event loop
     loop = asyncio.get_running_loop()
     camera_manager.initialize(loop)
+
+    from app.mqtt_client import mqtt_service
+    try:
+        startup_settings = get_system_settings()
+        if startup_settings.notifications.mqtt.enabled and startup_settings.notifications.mqtt.ha_discovery:
+            mqtt_service.sync_all_cameras(camera_manager.get_all(), startup_settings.notifications.mqtt)
+    except Exception as e:
+        logger.warning(f"Initial Home Assistant MQTT sync skipped: {e}", component="system")
     
-    # Background task for periodic telemetry broadcast
+    # Background task for periodic telemetry broadcast & Home Assistant MQTT snapshot push
+    last_mqtt_snap_push = 0.0
     async def telemetry_loop():
+        nonlocal last_mqtt_snap_push
         while True:
             await asyncio.sleep(2.0)
+            now = time.time()
+            mqtt_cfg = None
+            should_push_mqtt = False
+            try:
+                mqtt_cfg = get_system_settings().notifications.mqtt
+                interval = max(1, int(getattr(mqtt_cfg, "snapshot_interval_seconds", 5)))
+                if mqtt_cfg.enabled and (mqtt_cfg.broker_url or mqtt_cfg.broker_host) and (now - last_mqtt_snap_push >= interval):
+                    should_push_mqtt = True
+                    last_mqtt_snap_push = now
+            except Exception:
+                pass
+
             for cam in camera_manager.get_all():
                 worker = camera_manager.get_worker(cam.id)
                 if worker:
                     telem = worker.get_telemetry()
                     await notification_manager.send_telemetry_update(telem.model_dump())
+                    if should_push_mqtt and mqtt_cfg:
+                        jpeg = worker.get_latest_jpeg() if getattr(mqtt_cfg, "publish_live_snapshots", True) else None
+                        await asyncio.to_thread(
+                            mqtt_service.publish_camera_state,
+                            cam.id,
+                            cam.is_online,
+                            telem.fps,
+                            getattr(cam.settings, "ai_enabled", True),
+                            jpeg,
+                            mqtt_cfg,
+                        )
     
     async def storage_retention_loop():
         from app.storage import purge_expired_storage
@@ -75,15 +110,16 @@ async def lifespan(app: FastAPI):
     logger.info("Gawkr AI-NVR Server shutting down...", component="system")
     task.cancel()
     storage_task.cancel()
+    mqtt_service.shutdown()
     camera_manager.shutdown()
 
 app = FastAPI(title="Gawkr AI-NVR Server", version="1.0.0", lifespan=lifespan)
 
-# Allow CORS for local dev servers
+# Allow CORS for local dev servers and reverse proxies
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -106,15 +142,34 @@ async def login(credentials: UserLogin, request: Request):
     client_ip = extract_client_ip(request)
     user_agent = request.headers.get("user-agent", "Unknown")
 
-    user = authenticate_user(credentials.username, credentials.password)
-    if not user:
-        record_login_audit(credentials.username, client_ip, user_agent, "FAILED", "Incorrect username or password")
-        logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} ({user_agent[:45]})", component="auth")
+    # 1. Enforce automatic brute-force lockout (blocks after 2 failed logins)
+    if is_ip_blocked(client_ip):
+        record_login_audit(credentials.username, client_ip, user_agent, "BLOCKED", "IP blocked due to repeated failed logins")
+        logger.warning(f"Rejected login attempt from blocked IP {client_ip} for username '{credentials.username}'", component="auth")
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access Denied: Your IP address ({client_ip}) is currently blocked due to repeated failed login attempts. An administrator can unblock it from the Control Panel."
         )
 
+    user = authenticate_user(credentials.username, credentials.password)
+    if not user:
+        now_blocked = record_login_failure(client_ip, max_failures=2)
+        reason = "Incorrect username or password" + (" (IP blocked after 2 failures)" if now_blocked else " (Attempt 1 of 2)")
+        status_label = "BLOCKED" if now_blocked else "FAILED"
+        record_login_audit(credentials.username, client_ip, user_agent, status_label, reason)
+        logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} (blocked={now_blocked})", component="auth")
+        if now_blocked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 2 failed login attempts. An administrator can unblock it from the Control Panel."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password. Warning: 2 failed attempts will automatically block this IP address."
+        )
+
+    # 2. On successful authentication, reset failed attempts counter
+    reset_ip_failures(client_ip)
     record_login_audit(credentials.username, client_ip, user_agent, "SUCCESS")
     logger.info(f"Successful login for user '{credentials.username}' from {client_ip}", component="auth")
     token = create_access_token({"sub": user["username"], "role": user["role"]})
@@ -229,6 +284,40 @@ async def get_camera_telemetry(camera_id: str, user: dict = Depends(get_current_
         raise HTTPException(status_code=404, detail="Camera stream not found")
     return worker.get_telemetry()
 
+@app.post("/api/cameras/{camera_id}/timelapse/start")
+async def start_camera_timelapse(camera_id: str, req: Optional[TimelapseStartRequest] = None, user: dict = Depends(require_admin)):
+    """Starts a background time-lapse frame capture session for the specified camera."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    cam_settings = getattr(worker.camera, 'settings', None)
+    interval = req.interval_seconds if (req and req.interval_seconds is not None) else getattr(cam_settings, 'timelapse_interval_seconds', 10.0)
+    fps = req.output_fps if (req and req.output_fps is not None) else getattr(cam_settings, 'timelapse_output_fps', 30)
+    dur = req.duration_minutes if (req and req.duration_minutes is not None) else getattr(cam_settings, 'timelapse_duration_minutes', 0)
+    title = (req.title if req else "") or ""
+    return worker.start_timelapse(
+        interval_seconds=interval,
+        output_fps=fps,
+        duration_minutes=dur,
+        title=title
+    )
+
+@app.post("/api/cameras/{camera_id}/timelapse/stop")
+async def stop_camera_timelapse(camera_id: str, compile: bool = Query(True), user: dict = Depends(require_admin)):
+    """Stops active time-lapse capture and compiles frames into an MP4 clip (unless compile=false)."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return worker.stop_timelapse(compile_video=compile)
+
+@app.get("/api/cameras/{camera_id}/timelapse/status")
+async def get_camera_timelapse_status(camera_id: str, user: dict = Depends(get_current_user)):
+    """Returns current time-lapse capture session metrics for the camera."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream not found")
+    return worker.get_timelapse_status()
+
 # ----------------- VIDEO STREAMING & SNAPSHOTS -----------------
 
 @app.get("/api/cameras/{camera_id}/stream")
@@ -276,16 +365,22 @@ async def capture_snapshot(camera_id: str, user: dict = Depends(get_current_user
 
 @app.get("/api/snapshots/{filename}")
 async def get_snapshot_file(filename: str):
-    file_path = SNAPSHOTS_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
+    clean_name = Path(filename).name
+    if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid snapshot filename")
+    file_path = (SNAPSHOTS_DIR / clean_name).resolve()
+    if not file_path.is_relative_to(SNAPSHOTS_DIR.resolve()) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Snapshot not found")
     return FileResponse(str(file_path), media_type="image/jpeg")
 
 @app.get("/api/recordings/{filename}")
 async def get_recording_file(filename: str):
     """Serves recorded H.264 MP4 clips with HTTP Range seeking support for smooth web playback."""
-    file_path = RECORDINGS_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
+    clean_name = Path(filename).name
+    if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid recording filename")
+    file_path = (RECORDINGS_DIR / clean_name).resolve()
+    if not file_path.is_relative_to(RECORDINGS_DIR.resolve()) or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Recording clip not found or still processing")
     return FileResponse(str(file_path), media_type="video/mp4")
 
@@ -388,6 +483,9 @@ async def update_settings(new_settings: SystemSettings, user: dict = Depends(req
         if getattr(c.settings, 'use_global_threshold', True):
             c.settings.confidence_threshold = global_thresh
             camera_manager.update(c.id, CameraUpdate(settings=c.settings))
+    if new_settings.notifications.mqtt.enabled and new_settings.notifications.mqtt.ha_discovery:
+        from app.mqtt_client import mqtt_service
+        mqtt_service.sync_all_cameras(camera_manager.get_all(), new_settings.notifications.mqtt)
     return {
         "status": "updated",
         "settings": new_settings.model_dump(),
@@ -538,13 +636,22 @@ async def test_notification(service: str, payload: dict, user: dict = Depends(re
             return send_pushover_alert(user_key, api_token, DummyEvent())
 
         elif service == "mqtt":
-            broker = payload.get("broker_url")
+            broker = payload.get("broker_url") or payload.get("broker_host")
             if not broker:
-                raise HTTPException(status_code=400, detail="Missing MQTT Broker URL (e.g. localhost:1883)")
+                raise HTTPException(status_code=400, detail="Missing MQTT Broker URL or Host (e.g. homeassistant.local:1883)")
             from app.mqtt_client import mqtt_service
             from app.models import MqttConfig
             cfg = MqttConfig(**payload)
-            mqtt_service.publish_ha_discovery("test_cam", "Test Security Cam", cfg)
+            cfg.enabled = True
+            cams = camera_manager.get_all()
+            if cams:
+                synced = mqtt_service.sync_all_cameras(cams, cfg)
+                if synced == 0:
+                    raise HTTPException(status_code=400, detail="Could not connect to MQTT broker with the provided credentials.")
+                return {"success": True, "message": f"MQTT connected! Published Home Assistant discovery for {synced} camera(s)."}
+            ok = mqtt_service.publish_ha_discovery("test_cam", "Test Security Cam", cfg)
+            if not ok:
+                raise HTTPException(status_code=400, detail="Could not connect to MQTT broker.")
             return {"success": True, "message": "MQTT connected! Home Assistant discovery published."}
 
         raise HTTPException(status_code=400, detail=f"Unsupported notification service: {service}")
@@ -602,6 +709,29 @@ async def clear_login_audit_endpoint(user: dict = Depends(require_admin)):
     logger.info(f"Security login audit trail cleared by user '{user['username']}'", component="security")
     return {"status": "cleared"}
 
+# ----------------- BLOCKED IPS DEFENSE -----------------
+
+@app.get("/api/security/blocked-ips")
+async def get_blocked_ips_endpoint(user: dict = Depends(require_admin)):
+    """Lists all blocked IP addresses with lock reason and timestamp."""
+    return {"blocked_ips": get_blocked_ips()}
+
+@app.delete("/api/security/blocked-ips/{ip:path}")
+async def unblock_ip_endpoint(ip: str, user: dict = Depends(require_admin)):
+    """Unblocks an IP address, clearing failure count and active lock."""
+    success = unblock_ip(ip)
+    record_login_audit(user["username"], ip, "Control Panel", "UNBLOCKED", f"IP address {ip} unblocked by administrator")
+    logger.info(f"IP address '{ip}' unblocked by user '{user['username']}' (success={success})", component="security")
+    return {"status": "unblocked", "ip": ip, "success": success}
+
+@app.post("/api/security/blocked-ips")
+async def block_ip_endpoint(req: BlockIpRequest, user: dict = Depends(require_admin)):
+    """Manually blocks an IP address."""
+    manually_block_ip(req.ip, req.reason or "Manual block via Control Panel")
+    record_login_audit(user["username"], req.ip, "Control Panel", "BLOCKED", f"Manually blocked: {req.reason}")
+    logger.warning(f"IP address '{req.ip}' manually blocked by user '{user['username']}'", component="security")
+    return {"status": "blocked", "ip": req.ip}
+
 # ----------------- DAILY AI BRIEFING -----------------
 
 @app.get("/api/briefing/today")
@@ -616,10 +746,102 @@ async def trigger_generate_briefing(user: dict = Depends(require_admin)):
     from app.daily_briefing import generate_daily_briefing
     return generate_daily_briefing(hours=24)
 
+# ----------------- HOME ASSISTANT CCTV COMPATIBILITY -----------------
+
+@app.get("/api/ha/cameras")
+async def ha_list_cameras(request: Request, user: dict = Depends(verify_ha_integration_auth)):
+    """Lists cameras with Home Assistant-compatible snapshot, MJPEG, and RTSP URLs."""
+    base_url = str(request.base_url).rstrip("/")
+    token_q = request.query_params.get("token")
+    suffix = f"?token={token_q}" if token_q else ""
+    result = []
+    for cam in camera_manager.get_all():
+        worker = camera_manager.get_worker(cam.id)
+        telem = worker.get_telemetry() if worker else None
+        result.append({
+            "id": cam.id,
+            "name": cam.name,
+            "vendor": cam.vendor,
+            "model": cam.model,
+            "is_online": cam.is_online,
+            "ai_enabled": getattr(cam.settings, "ai_enabled", True),
+            "fps": telem.fps if telem else 0.0,
+            "resolution": telem.resolution if telem else "Unknown",
+            "snapshot_url": f"{base_url}/api/ha/cameras/{cam.id}/snapshot{suffix}",
+            "mjpeg_url": f"{base_url}/api/ha/cameras/{cam.id}/stream{suffix}",
+            "rtsp_main_url": cam.main_stream_url,
+            "rtsp_sub_url": cam.sub_stream_url,
+        })
+    return {"count": len(result), "cameras": result}
+
+
+@app.get("/api/ha/cameras/{camera_id}/snapshot")
+async def ha_camera_snapshot(camera_id: str, user: dict = Depends(verify_ha_integration_auth)):
+    """Returns the latest AI-annotated JPEG snapshot for Home Assistant camera entities."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    jpeg = worker.get_latest_jpeg() or camera_manager.take_snapshot(camera_id)
+    if not jpeg:
+        raise HTTPException(status_code=503, detail="Camera snapshot not yet available")
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+@app.get("/api/ha/cameras/{camera_id}/stream")
+async def ha_camera_stream(camera_id: str, user: dict = Depends(verify_ha_integration_auth)):
+    """Streams AI-annotated MJPEG video for Home Assistant MJPEG/Generic Camera integration."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera stream inactive")
+
+    async def frame_generator():
+        last_frame_ref = None
+        while True:
+            jpeg = worker.get_latest_jpeg()
+            if jpeg is not None and jpeg is not last_frame_ref:
+                last_frame_ref = jpeg
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
+                )
+                await asyncio.sleep(0.015)
+            else:
+                await asyncio.sleep(0.015)
+
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.post("/api/ha/sync")
+async def ha_sync_discovery(user: dict = Depends(verify_ha_integration_auth)):
+    """Publishes Home Assistant MQTT auto-discovery configs for all cameras."""
+    from app.mqtt_client import mqtt_service
+
+    settings = get_system_settings()
+    cfg = settings.notifications.mqtt
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail="MQTT integration is disabled in Gawkr settings")
+    cams = camera_manager.get_all()
+    synced = mqtt_service.sync_all_cameras(cams, cfg)
+    return {"status": "synced", "cameras_synced": synced, "total_cameras": len(cams)}
+
+
 # ----------------- WEBSOCKET ALERTS -----------------
 
 @app.websocket("/api/ws/events")
 async def websocket_events_endpoint(websocket: WebSocket):
+    # Verify token from query parameter (?token=...) or Authorization header (Bearer ...)
+    token = websocket.query_params.get("token")
+    if not token:
+        auth_header = websocket.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+    if not token or not decode_access_token(token):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await notification_manager.connect(websocket)
     try:
         while True:

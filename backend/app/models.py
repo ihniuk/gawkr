@@ -63,7 +63,13 @@ class CameraSettings(BaseModel):
     min_confirmation_frames: int = 2   # Require N consecutive frames to confirm real object vs glitch
     min_area_pixels: int = 2500        # Reject small pixel changes, leaves, wind
     pre_roll_seconds: int = 4          # Pre-roll recording seconds before detection
-    post_roll_seconds: int = 6         # Post-roll recording seconds after detection
+    post_roll_seconds: int = 10        # Post-roll recording seconds after detection / inactivity
+    min_recording_seconds: int = 15    # Minimum clip duration for an event
+    max_recording_seconds: int = 300   # Maximum recording duration while activity continues (default 5 mins)
+    extend_while_active: bool = True   # Automatically prolong recording as long as people/movement are in frame
+    timelapse_interval_seconds: float = 10.0  # Basic time-lapse capture interval
+    timelapse_output_fps: int = 30            # Basic time-lapse playback speed
+    timelapse_duration_minutes: int = 0       # 0 = manual stop
 
 class CameraCreate(BaseModel):
     name: str
@@ -115,6 +121,16 @@ class StreamTelemetry(BaseModel):
     ai_latency_ms: float = 0.0
     dropped_frames: int = 0
     status: str = "active"
+    timelapse_active: bool = False
+    timelapse_frames: int = 0
+    timelapse_interval: float = 0.0
+    timelapse_title: Optional[str] = None
+
+class TimelapseStartRequest(BaseModel):
+    interval_seconds: Optional[float] = None  # Capture 1 frame every N seconds (falls back to camera settings)
+    output_fps: Optional[int] = None          # Output video playback FPS
+    duration_minutes: Optional[int] = None    # 0 = continuous until manually stopped
+    title: Optional[str] = ""                 # Optional user label
 
 class DetectionObject(BaseModel):
     label: str
@@ -179,6 +195,9 @@ class MqttConfig(BaseModel):
     password: str = ""
     topic_prefix: str = "homeassistant/nvr"
     ha_discovery: bool = True
+    ha_api_key: str = ""
+    publish_live_snapshots: bool = True
+    snapshot_interval_seconds: int = 5
 
 class PushoverConfig(BaseModel):
     enabled: bool = False
@@ -297,3 +316,7 @@ class CredentialVerifyResponse(BaseModel):
     profiles: List[ProfileInfo] = []
     suggested_main_url: str = ""
     suggested_sub_url: str = ""
+
+class BlockIpRequest(BaseModel):
+    ip: str
+    reason: Optional[str] = "Manual block"

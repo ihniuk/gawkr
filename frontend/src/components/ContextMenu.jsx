@@ -1,13 +1,15 @@
 import React, { useEffect, useRef } from 'react';
 import { 
   Camera, Crosshair, Cpu, RefreshCw, Disc, 
-  Settings, Activity, Maximize2, Trash2, ShieldAlert, Zap
+  Settings, Activity, Maximize2, Trash2, ShieldAlert, Zap,
+  Timer, Square
 } from 'lucide-react';
 
 export default function ContextMenu({
   x,
   y,
   camera,
+  telemetry,
   isAdmin,
   onClose,
   onTakeSnapshot,
@@ -16,6 +18,9 @@ export default function ContextMenu({
   onToggleRecording,
   onRestartStream,
   onTriggerTestAlert,
+  onStartTimelapse,
+  onOpenTimelapse,
+  onStopTimelapse,
   onOpenSettings,
   onOpenTelemetry,
   onDeleteCamera
@@ -41,7 +46,7 @@ export default function ContextMenu({
 
   // Adjust position so it doesn't overflow screen
   const menuWidth = Math.min(260, window.innerWidth - 20);
-  const menuHeight = 380;
+  const menuHeight = 465;
   const adjustedX = Math.max(10, Math.min(x, window.innerWidth - menuWidth - 10));
   const adjustedY = Math.max(10, Math.min(y, window.innerHeight - menuHeight - 10));
 
@@ -88,6 +93,34 @@ export default function ContextMenu({
         <Disc size={15} color={camera.settings?.recording_mode !== 'disabled' ? '#f43f5e' : '#94a3b8'} />
         <span>Recording: {camera.settings?.recording_mode || 'ai_event'}</span>
       </button>
+
+      {isAdmin && (
+        telemetry?.timelapse_active ? (
+          <>
+            <button className="context-menu-item" onClick={() => { onStopTimelapse(camera); onClose(); }}>
+              <Square size={15} color="#f59e0b" />
+              <span style={{ color: '#fcd34d', fontWeight: 600 }}>
+                Stop Time-Lapse ({telemetry.timelapse_frames || 0}f)
+              </span>
+            </button>
+            <button className="context-menu-item" onClick={() => { onOpenTimelapse(camera); onClose(); }}>
+              <Timer size={15} color="#c084fc" />
+              <span>Time-Lapse Session Status</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button className="context-menu-item" onClick={() => { onStartTimelapse(camera); onClose(); }}>
+              <Timer size={15} color="#c084fc" />
+              <span>Start Time-Lapse</span>
+            </button>
+            <button className="context-menu-item" onClick={() => { onOpenTimelapse(camera); onClose(); }}>
+              <Settings size={15} color="#94a3b8" />
+              <span>Time-Lapse Settings</span>
+            </button>
+          </>
+        )
+      )}
 
       <div className="context-menu-separator" />
 

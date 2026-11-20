@@ -7,12 +7,13 @@ import uuid
 import math
 import collections
 import subprocess
+import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Deque
 import numpy as np
 import cv2
-from app.config import RECORDINGS_DIR, SNAPSHOTS_DIR
-from app.models import CameraModel, StreamTelemetry, DetectionEvent
+from app.config import RECORDINGS_DIR, SNAPSHOTS_DIR, TIMELAPSES_DIR
+from app.models import CameraModel, StreamTelemetry, DetectionEvent, DetectionObject
 from app.inference import inference_engine
 from app.storage import save_snapshot_image, save_event_to_db, update_event_video_clip
 from app.hardware import detect_hardware_capabilities, get_ffmpeg_encode_args
@@ -42,6 +43,9 @@ class CameraStreamWorker:
         self.last_preroll_time = 0.0
         self.active_recordings: List[Dict[str, Any]] = []
         self.recording_lock = threading.Lock()
+        self.is_recording_clip: bool = False
+        self.recording_event_id: Optional[str] = None
+        self.last_active_detection_time: float = 0.0
         
         # False-alert prevention: multi-frame persistence filter
         self.consecutive_detection_count = 0
@@ -50,6 +54,19 @@ class CameraStreamWorker:
         # Stationary Vehicle & Motion Tracking
         self.tracked_vehicles: List[Dict[str, Any]] = []
         self.last_ai_description: Optional[str] = None
+
+        # Time-Lapse Session State
+        self.timelapse_lock = threading.Lock()
+        self.timelapse_active: bool = False
+        self.timelapse_session_id: Optional[str] = None
+        self.timelapse_title: Optional[str] = None
+        self.timelapse_interval: float = 10.0
+        self.timelapse_output_fps: int = 30
+        self.timelapse_duration_minutes: int = 0
+        self.timelapse_start_time: float = 0.0
+        self.timelapse_last_capture: float = 0.0
+        self.timelapse_frame_count: int = 0
+        self.timelapse_dir: Optional[Path] = None
         
         # Telemetry
         self.fps = 0.0
@@ -75,6 +92,11 @@ class CameraStreamWorker:
             self.thread.start()
 
     def stop(self):
+        if self.timelapse_active:
+            try:
+                self.stop_timelapse(compile_video=True)
+            except Exception as e:
+                print(f"Error compiling timelapse on stop: {e}")
         self.is_running = False
         if self.capture_thread and self.capture_thread.is_alive():
             self.capture_thread.join(timeout=1.0)
@@ -270,47 +292,44 @@ class CameraStreamWorker:
         except Exception as e:
             print(f"Vision enhancement / notification dispatch error: {e}")
 
-    def _record_event_clip_async(self, event_id: str, pre_roll_frames: List[np.ndarray], post_roll_seconds: int = 5):
-        """Asynchronously records pre-roll and post-roll frames into an H.264 MP4 with +faststart."""
+    def _record_event_clip_async(self, event_id: str, pre_roll_frames: List[np.ndarray], post_roll_seconds: int = 10):
+        """Asynchronously records pre-roll and real-time frames into an H.264 MP4 with dynamic activity continuation."""
         def _recorder():
+            self.is_recording_clip = True
+            self.recording_event_id = event_id
             try:
-                # Synchronize recording frame rate to stream FPS so pre-roll and post-roll match 1.0x real-time speed
+                # Synchronize recording frame rate to stream FPS
                 clip_fps = max(10, min(30, int(round(self.fps)))) if self.fps > 5 else 20
                 frame_interval = 1.0 / clip_fps
-                total_post_frames = int(post_roll_seconds * clip_fps)
 
-                # Determine recording resolution from pre-roll frames
+                cam_settings = getattr(self.camera, 'settings', None)
+                min_rec = getattr(cam_settings, 'min_recording_seconds', 15) if cam_settings else 15
+                max_rec = getattr(cam_settings, 'max_recording_seconds', 300) if cam_settings else 300
+                post_roll = getattr(cam_settings, 'post_roll_seconds', post_roll_seconds) if cam_settings else post_roll_seconds
+                extend_active = getattr(cam_settings, 'extend_while_active', True) if cam_settings else True
+
+                # Determine recording resolution from pre-roll frames or current frame
                 if pre_roll_frames:
                     h, w = pre_roll_frames[0].shape[:2]
+                elif self.latest_frame is not None:
+                    h, w = self.latest_frame.shape[:2]
                 else:
                     w, h = 640, 360
                 w = (w // 2) * 2
                 h = (h // 2) * 2
-                
-                post_roll_frames = []
-                for _ in range(total_post_frames):
-                    time.sleep(frame_interval)
-                    with self.frame_lock:
-                        if self.latest_frame is not None:
-                            post_roll_frames.append(cv2.resize(self.latest_frame, (w, h)))
-                            
-                all_frames = list(pre_roll_frames) + post_roll_frames
-                if not all_frames:
-                    return
-                    
+
                 out_filename = f"{self.camera.id}_{event_id}.mp4"
                 out_path = RECORDINGS_DIR / out_filename
                 temp_out_path = RECORDINGS_DIR / f"tmp_{out_filename}"
-                
+
                 # Retrieve configured hardware backend and encoding parameters
-                cam_settings = getattr(self.camera, 'settings', None)
                 hw_backend = getattr(cam_settings, 'hw_accel_backend', 'auto') if cam_settings else 'auto'
                 preset = getattr(cam_settings, 'encoding_preset', 'ultrafast') if cam_settings else 'ultrafast'
                 crf = getattr(cam_settings, 'encoding_crf', 26) if cam_settings else 26
 
                 encode_args = get_ffmpeg_encode_args(backend=hw_backend, preset=preset, crf=crf)
 
-                # Encode web-compatible H.264 MP4 via FFmpeg pipe with matching -r {clip_fps} and +faststart
+                # Launch FFmpeg pipe process
                 cmd = [
                     'ffmpeg', '-y',
                     '-f', 'rawvideo',
@@ -322,67 +341,96 @@ class CameraStreamWorker:
                     *encode_args,
                     str(temp_out_path)
                 ]
-                
+
                 proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                for f in all_frames:
+
+                # 1. Feed pre-roll buffer frames immediately into encoder
+                total_written = 0
+                for f in pre_roll_frames:
                     if f.shape[:2] != (h, w):
                         f = cv2.resize(f, (w, h))
                     try:
                         proc.stdin.write(f.tobytes())
+                        total_written += 1
                     except (BrokenPipeError, IOError):
                         break
+
+                # 2. Dynamic recording loop: keep recording while people/active motion persist
+                record_start = time.time()
+                last_active_time = record_start
+
+                while self.is_running:
+                    time.sleep(frame_interval)
+                    now = time.time()
+                    elapsed = now - record_start
+
+                    # Grab latest live camera frame
+                    frame_to_write = None
+                    with self.frame_lock:
+                        if self.latest_frame is not None:
+                            frame_to_write = self.latest_frame if self.latest_frame.shape[:2] == (h, w) else cv2.resize(self.latest_frame, (w, h))
+
+                    if frame_to_write is not None:
+                        try:
+                            proc.stdin.write(frame_to_write.tobytes())
+                            total_written += 1
+                        except (BrokenPipeError, IOError):
+                            print(f"FFmpeg stdin broken during event recording for {self.camera.name}")
+                            break
+
+                    # Check for active detections (persons or moving triggers)
+                    is_active = False
+                    if self.last_active_detection_time > 0 and (now - self.last_active_detection_time) < 2.5:
+                        is_active = True
+                    elif any(d.label == "person" for d in getattr(self, 'latest_detections', [])):
+                        is_active = True
+
+                    if is_active:
+                        last_active_time = now
+
+                    # Hard maximum recording limit reached (e.g. 5 minutes)
+                    if elapsed >= max_rec:
+                        print(f"Event clip for {self.camera.name} reached max duration ({max_rec}s, {total_written} frames)")
+                        break
+
+                    # Minimum clip length guarantee
+                    if elapsed < min_rec:
+                        continue
+
+                    # If dynamic extension disabled, stop after fixed post_roll
+                    if not extend_active:
+                        if elapsed >= (min_rec + post_roll):
+                            break
+                        continue
+
+                    # Scene clear check: stop once no people or motion for post_roll seconds
+                    if (now - last_active_time) >= post_roll:
+                        print(f"Scene clear for {post_roll}s on {self.camera.name}. Concluding event recording ({elapsed:.1f}s, {total_written} frames)")
+                        break
+
+                # Finish encoding
                 try:
                     proc.stdin.close()
                 except Exception:
                     pass
                 proc.wait()
 
-                # Robust fallback: if hardware encoder failed (e.g., GPU memory exhaustion or unsupported format),
-                # retry encoding with software libx264 so clip is guaranteed never lost
-                if proc.returncode != 0 and ('h264_nvenc' in encode_args or 'h264_qsv' in encode_args):
-                    fallback_cmd = [
-                        'ffmpeg', '-y',
-                        '-f', 'rawvideo',
-                        '-vcodec', 'rawvideo',
-                        '-s', f'{w}x{h}',
-                        '-pix_fmt', 'bgr24',
-                        '-r', str(clip_fps),
-                        '-i', '-',
-                        '-c:v', 'libx264',
-                        '-preset', 'ultrafast',
-                        '-crf', str(crf),
-                        '-pix_fmt', 'yuv420p',
-                        '-g', '40',
-                        '-movflags', '+faststart',
-                        str(temp_out_path)
-                    ]
-                    fallback_proc = subprocess.Popen(fallback_cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                    for f in all_frames:
-                        if f.shape[:2] != (h, w):
-                            f = cv2.resize(f, (w, h))
-                        try:
-                            fallback_proc.stdin.write(f.tobytes())
-                        except (BrokenPipeError, IOError):
-                            break
-                    try:
-                        fallback_proc.stdin.close()
-                    except Exception:
-                        pass
-                    fallback_proc.wait()
-                
                 # Atomically promote temporary file to final output path
-                if temp_out_path.exists():
+                if temp_out_path.exists() and temp_out_path.stat().st_size > 1024:
                     try:
                         if out_path.exists():
                             out_path.unlink()
                         temp_out_path.replace(out_path)
                     except Exception:
                         pass
+                    print(f"Recorded dynamic event clip successfully: {out_filename} ({total_written} frames @ {clip_fps} FPS)")
+                else:
+                    print(f"Warning: Failed to produce valid recording clip {out_filename}")
 
                 # Update DB and notify
                 video_url = f"/api/recordings/{out_filename}"
                 update_event_video_clip(event_id, video_url)
-                
+
                 if self.notification_callback:
                     # Send updated event notification
                     updated_evt = DetectionEvent(
@@ -397,6 +445,9 @@ class CameraStreamWorker:
                     self.notification_callback(updated_evt)
             except Exception as e:
                 print(f"Clip recording error: {e}")
+            finally:
+                self.is_recording_clip = False
+                self.recording_event_id = None
 
         t = threading.Thread(target=_recorder, daemon=True)
         t.start()
@@ -440,7 +491,7 @@ class CameraStreamWorker:
         ).start()
             
         # Spawn clip recording
-        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 5)
+        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 10)
         self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
         return event
 
@@ -607,6 +658,9 @@ class CameraStreamWorker:
                     self.pre_roll_buffer.append(cv2.resize(frame, (target_w, target_h)))
 
             now = time.time()
+            if self.timelapse_active:
+                self._check_timelapse_tick(frame, now)
+
             if now - self.last_stat_time >= 1.0:
                 elapsed = now - self.last_stat_time
                 self.fps = round(self.frame_counter / elapsed, 1)
@@ -673,6 +727,13 @@ class CameraStreamWorker:
                 d for d in evaluated_detections
                 if not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
             ]
+
+            has_active_people_or_motion = any(
+                d.label == "person" or not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
+                for d in evaluated_detections
+            )
+            if has_active_people_or_motion:
+                self.last_active_detection_time = loop_start
             
             min_frames = max(1, getattr(self.camera.settings, 'min_confirmation_frames', 2))
             cooldown = getattr(self.camera.settings, 'alert_cooldown_seconds', 45)
@@ -728,10 +789,14 @@ class CameraStreamWorker:
                 ).start()
                     
                 if self.camera.settings.recording_mode in ['ai_event', 'continuous']:
-                    with self.frame_lock:
-                        pre_roll = list(self.pre_roll_buffer)
-                    post_roll = getattr(self.camera.settings, 'post_roll_seconds', 6)
-                    self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
+                    if self.is_recording_clip:
+                        # Existing clip recording is in progress: keep it alive with ongoing detection
+                        self.last_active_detection_time = loop_start
+                    else:
+                        with self.frame_lock:
+                            pre_roll = list(self.pre_roll_buffer)
+                        post_roll = getattr(self.camera.settings, 'post_roll_seconds', 10)
+                        self._record_event_clip_async(event_id, pre_roll, post_roll_seconds=post_roll)
 
             elapsed = time.time() - loop_start
             sleep_needed = max(0.01, infer_interval - elapsed)
@@ -762,6 +827,171 @@ class CameraStreamWorker:
                 return "NVDEC (HW/CUDA)"
             return "CPU (Software)"
 
+    def start_timelapse(self, interval_seconds: float = 10.0, output_fps: int = 30, duration_minutes: int = 0, title: str = "") -> Dict[str, Any]:
+        """Starts an asynchronous time-lapse frame capture session for this camera."""
+        with self.timelapse_lock:
+            if self.timelapse_active:
+                return self.get_timelapse_status()
+
+            interval = max(1.0, float(interval_seconds))
+            fps = max(10, min(60, int(output_fps)))
+            dur = max(0, int(duration_minutes))
+            session_id = f"tl_{uuid.uuid4().hex[:8]}"
+            tl_dir = TIMELAPSES_DIR / session_id
+            tl_dir.mkdir(parents=True, exist_ok=True)
+
+            self.timelapse_session_id = session_id
+            self.timelapse_title = (title or "").strip() or f"{self.camera.name} Time-Lapse"
+            self.timelapse_interval = interval
+            self.timelapse_output_fps = fps
+            self.timelapse_duration_minutes = dur
+            self.timelapse_start_time = time.time()
+            self.timelapse_last_capture = 0.0  # Triggers immediate capture of frame 1
+            self.timelapse_frame_count = 0
+            self.timelapse_dir = tl_dir
+            self.timelapse_active = True
+
+        return self.get_timelapse_status()
+
+    def stop_timelapse(self, compile_video: bool = True) -> Dict[str, Any]:
+        """Stops active time-lapse capture and optionally compiles frames into an H.264 MP4 clip."""
+        with self.timelapse_lock:
+            if not self.timelapse_active:
+                return {"active": False, "status": "idle"}
+
+            self.timelapse_active = False
+            session_id = self.timelapse_session_id
+            tl_dir = self.timelapse_dir
+            frame_count = self.timelapse_frame_count
+            output_fps = self.timelapse_output_fps
+            title = self.timelapse_title
+            start_time = self.timelapse_start_time
+
+            self.timelapse_session_id = None
+            self.timelapse_dir = None
+
+        if compile_video and tl_dir and frame_count > 0:
+            threading.Thread(
+                target=self._compile_timelapse_async,
+                args=(session_id, tl_dir, frame_count, output_fps, title, start_time),
+                daemon=True
+            ).start()
+            return {
+                "active": False,
+                "status": "compiling",
+                "session_id": session_id,
+                "frame_count": frame_count
+            }
+        else:
+            if tl_dir and tl_dir.exists():
+                shutil.rmtree(tl_dir, ignore_errors=True)
+            return {
+                "active": False,
+                "status": "discarded",
+                "session_id": session_id,
+                "frame_count": 0
+            }
+
+    def get_timelapse_status(self) -> Dict[str, Any]:
+        elapsed = (time.time() - self.timelapse_start_time) if self.timelapse_active else 0.0
+        return {
+            "active": self.timelapse_active,
+            "session_id": self.timelapse_session_id,
+            "title": self.timelapse_title,
+            "interval_seconds": self.timelapse_interval,
+            "output_fps": self.timelapse_output_fps,
+            "duration_minutes": self.timelapse_duration_minutes,
+            "frame_count": self.timelapse_frame_count,
+            "elapsed_seconds": round(elapsed, 1)
+        }
+
+    def _check_timelapse_tick(self, frame: np.ndarray, now: float):
+        """Captures full-resolution JPEG frames at the configured time-lapse interval."""
+        if self.timelapse_duration_minutes > 0 and (now - self.timelapse_start_time) >= (self.timelapse_duration_minutes * 60):
+            self.stop_timelapse(compile_video=True)
+            return
+
+        if (now - self.timelapse_last_capture) < self.timelapse_interval:
+            return
+
+        with self.timelapse_lock:
+            if not self.timelapse_active or not self.timelapse_dir:
+                return
+            self.timelapse_last_capture = now
+            self.timelapse_frame_count += 1
+            frame_idx = self.timelapse_frame_count
+            out_path = self.timelapse_dir / f"frame_{frame_idx:06d}.jpg"
+
+        frame_copy = frame.copy()
+        def _write():
+            try:
+                cv2.imwrite(str(out_path), frame_copy, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            except Exception as err:
+                print(f"Timelapse frame write error ({self.camera.name}): {err}")
+
+        threading.Thread(target=_write, daemon=True).start()
+
+    def _compile_timelapse_async(self, session_id: str, tl_dir: Path, frame_count: int, output_fps: int, title: str, start_time: float):
+        """Compiles captured time-lapse frames into an H.264 MP4 and registers it in the clip archive."""
+        try:
+            # Allow any in-flight frame write to finish flushing to disk
+            time.sleep(0.4)
+            jpg_files = sorted(tl_dir.glob("*.jpg"))
+            actual_frames = len(jpg_files)
+            if actual_frames == 0:
+                shutil.rmtree(tl_dir, ignore_errors=True)
+                return
+
+            clip_filename = f"{self.camera.id}_{session_id}.mp4"
+            snap_filename = f"{self.camera.id}_{session_id}.jpg"
+            out_mp4 = RECORDINGS_DIR / clip_filename
+            out_snap = SNAPSHOTS_DIR / snap_filename
+
+            # Save representative middle frame as thumbnail snapshot
+            mid_frame = jpg_files[len(jpg_files) // 2]
+            shutil.copy2(mid_frame, out_snap)
+
+            cmd = [
+                "ffmpeg", "-y",
+                "-framerate", str(output_fps),
+                "-pattern_type", "glob",
+                "-i", str(tl_dir / "*.jpg"),
+                "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-preset", "veryfast",
+                "-crf", "20",
+                "-movflags", "+faststart",
+                str(out_mp4)
+            ]
+
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if res.returncode != 0 or not out_mp4.exists():
+                print(f"Timelapse FFmpeg compile error ({self.camera.name}): {res.stderr[-400:]}")
+                return
+
+            duration_str = f"{actual_frames / max(1, output_fps):.1f}s"
+            event = DetectionEvent(
+                id=session_id,
+                camera_id=self.camera.id,
+                camera_name=self.camera.name,
+                timestamp=time.time(),
+                objects=[DetectionObject(label="timelapse", confidence=1.0, box=[0.0, 0.0, 0.0, 0.0])],
+                snapshot_url=f"/api/snapshots/{snap_filename}",
+                video_clip_url=f"/api/recordings/{clip_filename}",
+                ai_description=f"Time-Lapse: {title} ({actual_frames} frames @ {output_fps} FPS, {duration_str} clip)",
+                threat_level="Safe"
+            )
+            save_event_to_db(event)
+            if self.notification_callback:
+                self.notification_callback(event)
+
+            print(f"Timelapse compiled successfully for {self.camera.name}: {clip_filename} ({actual_frames} frames)")
+        except Exception as err:
+            print(f"Timelapse compilation error ({self.camera.name}): {err}")
+        finally:
+            shutil.rmtree(tl_dir, ignore_errors=True)
+
     def get_telemetry(self) -> StreamTelemetry:
         return StreamTelemetry(
             camera_id=self.camera.id,
@@ -771,5 +1001,9 @@ class CameraStreamWorker:
             decoder=self._get_active_decoder_label(),
             ai_latency_ms=self.ai_latency_ms,
             dropped_frames=self.dropped_frames,
-            status="online" if self.camera.is_online else "offline"
+            status="online" if self.camera.is_online else "offline",
+            timelapse_active=self.timelapse_active,
+            timelapse_frames=self.timelapse_frame_count,
+            timelapse_interval=self.timelapse_interval,
+            timelapse_title=self.timelapse_title
         )

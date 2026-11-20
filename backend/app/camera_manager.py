@@ -113,7 +113,18 @@ class CameraManager:
         )
         self._register_and_start(cam)
         save_camera_to_db(cam)
+        self._sync_mqtt_camera(cam)
         return cam
+
+    def _sync_mqtt_camera(self, cam: CameraModel):
+        try:
+            from app.storage import get_system_settings
+            from app.mqtt_client import mqtt_service
+            cfg = get_system_settings().notifications.mqtt
+            if cfg.enabled and cfg.ha_discovery:
+                mqtt_service.publish_ha_discovery(cam.id, cam.name, cfg, camera=cam)
+        except Exception as e:
+            print(f"MQTT camera sync error: {e}")
 
     def update(self, camera_id: str, data: CameraUpdate) -> Optional[CameraModel]:
         cam = self.cameras.get(camera_id)
@@ -162,6 +173,7 @@ class CameraManager:
             self.restart_worker(camera_id)
 
         save_camera_to_db(cam)
+        self._sync_mqtt_camera(cam)
         return cam
 
     def restart_worker(self, camera_id: str):
@@ -176,6 +188,14 @@ class CameraManager:
             worker.stop()
         self.cameras.pop(camera_id, None)
         delete_camera_from_db(camera_id)
+        try:
+            from app.storage import get_system_settings
+            from app.mqtt_client import mqtt_service
+            cfg = get_system_settings().notifications.mqtt
+            if cfg.enabled and cfg.ha_discovery:
+                mqtt_service.remove_ha_discovery(camera_id, cfg)
+        except Exception as e:
+            print(f"MQTT camera remove error: {e}")
         return True
 
     def take_snapshot(self, camera_id: str) -> Optional[bytes]:

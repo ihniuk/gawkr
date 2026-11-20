@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Camera, Maximize2, Activity, Disc, Cpu, ShieldCheck, 
-  AlertCircle, RefreshCw, Layers, MoreVertical 
+  AlertCircle, RefreshCw, Layers, MoreVertical, Timer 
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -182,6 +182,16 @@ export default function CameraTile({
           {camera.settings?.ai_enabled && (
             <div className="hud-chip" style={{ color: '#38bdf8', fontSize: isMobile ? '0.62rem' : '0.7rem' }}>
               <Cpu size={10} /> AI: {aiLatency}ms
+            </div>
+          )}
+          {telemetry?.timelapse_active && (
+            <div className="hud-chip" style={{
+              color: '#e9d5ff',
+              background: 'rgba(168, 85, 247, 0.28)',
+              borderColor: 'rgba(168, 85, 247, 0.5)',
+              fontSize: isMobile ? '0.62rem' : '0.7rem'
+            }}>
+              <Timer size={10} color="#c084fc" /> TL {telemetry.timelapse_frames || 0}f
             </div>
           )}
           {camera.settings?.recording_mode !== 'disabled' && (
