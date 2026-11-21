@@ -238,12 +238,14 @@ class CameraStreamWorker:
             def _run_ai_vision():
                 if sys_settings.ai_vision.enabled:
                     try:
+                        detected_labels = [getattr(o, 'label', str(o)) for o in (evt.objects or [])]
                         ai_res = analyze_snapshot_with_ai(
                             snap_frame,
                             sys_settings.ai_vision,
                             last_description=self.last_ai_description,
                             stationary_objects_note=stationary_note,
-                            memory_config=sys_settings.ai_memory
+                            memory_config=sys_settings.ai_memory,
+                            detected_objects=detected_labels
                         )
                         evt.ai_description = ai_res.get("description")
                         evt.threat_level = ai_res.get("threat_level", "Safe")

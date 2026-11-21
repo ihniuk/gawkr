@@ -62,6 +62,9 @@ export default function ControlPanel({
   // AI Vision Testing state
   const [isTestingVision, setIsTestingVision] = useState(false);
   const [visionTestResult, setVisionTestResult] = useState(null);
+  const [aiVisionHealth, setAiVisionHealth] = useState(null);
+  const [isHealingVision, setIsHealingVision] = useState(false);
+  const [healVisionResult, setHealVisionResult] = useState(null);
 
   // Notification Testing state
   const [testingService, setTestingService] = useState(null);
@@ -349,6 +352,8 @@ export default function ControlPanel({
       loadBlockedIps();
     } else if (activeTab === 'logs') {
       loadSystemLogs();
+    } else if (activeTab === 'ai_vision') {
+      fetchAiVisionHealth();
     }
   }, [activeTab]);
 
@@ -510,6 +515,42 @@ export default function ControlPanel({
       });
     } finally {
       setIsTestingVision(false);
+    }
+  };
+
+  const fetchAiVisionHealth = async () => {
+    try {
+      const res = await api.getAiVisionStatus();
+      setAiVisionHealth(res);
+    } catch (err) {
+      console.warn('Failed to fetch AI Vision status:', err);
+    }
+  };
+
+  const handleHealAiVision = async () => {
+    setIsHealingVision(true);
+    setHealVisionResult(null);
+    try {
+      const res = await api.healAiVision();
+      setHealVisionResult(res);
+      setAiVisionHealth(res);
+      if (res?.endpoint && settings?.ai_vision?.provider === 'ollama') {
+        setSettings(prev => ({
+          ...prev,
+          ai_vision: {
+            ...prev.ai_vision,
+            base_url: res.endpoint,
+            model_name: res.active_model || prev.ai_vision.model_name
+          }
+        }));
+      }
+    } catch (err) {
+      setHealVisionResult({
+        success: false,
+        error: err.message || 'Auto-healing probe encountered an error.'
+      });
+    } finally {
+      setIsHealingVision(false);
     }
   };
 
@@ -1991,16 +2032,118 @@ export default function ControlPanel({
               />
             </div>
 
-            {/* Test Connection Button */}
-            <button
-              className="btn-glass"
-              onClick={handleTestAiVision}
-              disabled={isTestingVision}
-              style={{ borderColor: 'rgba(168, 85, 247, 0.4)', color: '#d8b4fe' }}
-            >
-              <Sparkles size={14} color="#a855f7" className={isTestingVision ? 'animate-spin' : ''} />
-              {isTestingVision ? 'Testing Vision API Connection...' : 'Test Vision API Live Connection'}
-            </button>
+            {/* AI Vision Self-Healing & Connectivity Diagnostics */}
+            <div style={{
+              marginTop: '20px',
+              padding: '16px',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.07)',
+              borderRadius: '12px',
+              marginBottom: '16px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Activity size={16} color="var(--accent-cyan)" />
+                  <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                    Self-Healing & Route Diagnostics
+                  </span>
+                </div>
+                {aiVisionHealth && (
+                  <span style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    padding: '3px 10px',
+                    borderRadius: '20px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: (aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    color: (aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? '#10b981' : '#f87171',
+                    border: `1px solid ${(aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                  }}>
+                    {(aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? <CheckCircle size={12} /> : <AlertTriangle size={12} />}
+                    {(aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? `Online (${aiVisionHealth.latency_ms ? `${aiVisionHealth.latency_ms}ms` : 'Healthy'})` : 'Offline / Failover Active'}
+                  </span>
+                )}
+              </div>
+
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.5', marginBottom: '14px' }}>
+                Gawkr continuously monitors AI vision connectivity. If the local Ollama host restarts, stops, or changes network routes (such as Docker host changes or power cuts), Gawkr automatically probes host gateways, matches installed vision models, and ensures security events degrade gracefully to clean local neural summaries without raw connection error dumps.
+              </div>
+
+              {aiVisionHealth && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: '10px',
+                  marginBottom: '14px',
+                  fontSize: '0.76rem'
+                }}>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Active Endpoint</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)', marginTop: '2px', wordBreak: 'break-all' }}>
+                      {aiVisionHealth.endpoint || 'Unresolved (Host Offline)'}
+                    </div>
+                  </div>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Selected Vision Model</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', color: '#d8b4fe', marginTop: '2px' }}>
+                      {aiVisionHealth.active_model || 'None'}
+                    </div>
+                  </div>
+                  {aiVisionHealth.installed_models && aiVisionHealth.installed_models.length > 0 && (
+                    <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)', gridColumn: 'span 2' }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Installed Host Models</div>
+                      <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-main)', marginTop: '2px' }}>
+                        {aiVisionHealth.installed_models.join(', ')}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  className="btn-glass"
+                  onClick={handleHealAiVision}
+                  disabled={isHealingVision}
+                  style={{ borderColor: 'rgba(6, 182, 212, 0.4)', color: 'var(--accent-cyan)' }}
+                >
+                  <RefreshCw size={14} className={isHealingVision ? 'animate-spin' : ''} />
+                  {isHealingVision ? 'Probing Routes & Healing...' : 'Run Diagnostics & Auto-Heal'}
+                </button>
+
+                <button
+                  className="btn-glass"
+                  onClick={handleTestAiVision}
+                  disabled={isTestingVision}
+                  style={{ borderColor: 'rgba(168, 85, 247, 0.4)', color: '#d8b4fe' }}
+                >
+                  <Sparkles size={14} color="#a855f7" className={isTestingVision ? 'animate-spin' : ''} />
+                  {isTestingVision ? 'Testing Live Connection...' : 'Test Vision API Live Connection'}
+                </button>
+              </div>
+
+              {healVisionResult && (
+                <div style={{
+                  marginTop: '12px',
+                  background: healVisionResult.success ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                  border: `1px solid ${healVisionResult.success ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                  borderRadius: '8px',
+                  padding: '12px',
+                  fontSize: '0.8rem'
+                }}>
+                  <div style={{ fontWeight: 700, color: healVisionResult.success ? '#10b981' : '#f87171', marginBottom: '4px' }}>
+                    {healVisionResult.success ? '✓ Route Verified & Self-Healed Successfully' : '✗ Diagnostics & Auto-Heal Warning'}
+                  </div>
+                  <div style={{ color: 'var(--text-main)', lineHeight: '1.4' }}>
+                    {healVisionResult.success 
+                      ? `Successfully routed to ${healVisionResult.endpoint} (${healVisionResult.latency_ms}ms) with active model '${healVisionResult.active_model}'. ${healVisionResult.candidates_probed ? `Tested ${healVisionResult.candidates_probed} candidate routes.` : ''}`
+                      : healVisionResult.error || 'Could not establish connection to local Ollama. Automatic failover active.'}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Live Test Feedback Box */}
             {visionTestResult && (

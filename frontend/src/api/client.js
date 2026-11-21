@@ -313,6 +313,16 @@ export const api = {
     });
   },
 
+  async getAiVisionStatus() {
+    return apiFetch('/settings/ai-vision/status');
+  },
+
+  async healAiVision() {
+    return apiFetch('/settings/ai-vision/heal', {
+      method: 'POST'
+    });
+  },
+
   async getAIMemory() {
     return apiFetch('/settings/ai-memory');
   },

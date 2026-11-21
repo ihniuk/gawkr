@@ -102,14 +102,40 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error(f"Storage retention worker error: {e}", component="storage")
             await asyncio.sleep(1800) # Check every 30 minutes
+
+    async def ai_vision_health_loop():
+        from app.ai_vision import probe_and_heal_ollama
+        was_online = None
+        while True:
+            try:
+                settings = get_system_settings()
+                if settings.ai_vision.enabled and settings.ai_vision.provider == "ollama":
+                    status = await asyncio.to_thread(probe_and_heal_ollama, settings.ai_vision, False)
+                    is_online = status.get("success", False)
+                    if was_online is False and is_online:
+                        logger.info(
+                            f"AI Vision Self-Heal: Local Ollama link recovered at {status.get('endpoint')} using model '{status.get('active_model')}'",
+                            component="ai_vision"
+                        )
+                    elif was_online is True and not is_online:
+                        logger.warning(
+                            "AI Vision Alert: Local Ollama service is unreachable. Automatic neural failover active.",
+                            component="ai_vision"
+                        )
+                    was_online = is_online
+            except Exception as e:
+                logger.error(f"AI Vision health check error: {e}", component="ai_vision")
+            await asyncio.sleep(45)
     
     task = asyncio.create_task(telemetry_loop())
     storage_task = asyncio.create_task(storage_retention_loop())
+    ai_vision_task = asyncio.create_task(ai_vision_health_loop())
     yield
     # Shutdown
     logger.info("Gawkr AI-NVR Server shutting down...", component="system")
     task.cancel()
     storage_task.cancel()
+    ai_vision_task.cancel()
     mqtt_service.shutdown()
     camera_manager.shutdown()
 
@@ -595,8 +621,32 @@ async def get_recent_memory_snapshots(limit: int = 30, user: dict = Depends(get_
 @app.post("/api/settings/test-ai-vision")
 async def test_ai_vision(config: AIVisionConfig, user: dict = Depends(require_admin)):
     """Generates a test frame and runs real-time natural language description via configured AI API."""
-    result = test_ai_vision_connection(config)
+    result = await asyncio.to_thread(test_ai_vision_connection, config)
     return result
+
+@app.get("/api/settings/ai-vision/status")
+async def get_ai_vision_status_endpoint(user: dict = Depends(require_admin)):
+    """Returns real-time connectivity, active endpoint, installed models, and health status for AI Vision."""
+    from app.ai_vision import get_ai_vision_health_status, probe_and_heal_ollama
+    settings = get_system_settings()
+    if settings.ai_vision.provider == "ollama":
+        probe_res = await asyncio.to_thread(probe_and_heal_ollama, settings.ai_vision, False)
+        return probe_res
+    return get_ai_vision_health_status(settings.ai_vision)
+
+@app.post("/api/settings/ai-vision/heal")
+async def heal_ai_vision_endpoint(user: dict = Depends(require_admin)):
+    """Triggers immediate diagnostics and self-healing across candidate host endpoints and local models."""
+    from app.ai_vision import probe_and_heal_ollama, test_ai_vision_connection
+    settings = get_system_settings()
+    heal_res = await asyncio.to_thread(probe_and_heal_ollama, settings.ai_vision, True)
+    if heal_res.get("success"):
+        test_res = await asyncio.to_thread(test_ai_vision_connection, settings.ai_vision)
+        heal_res["verification_test"] = test_res
+        logger.info(f"AI Vision self-heal succeeded: {heal_res.get('endpoint')} ({heal_res.get('active_model')})", component="ai_vision")
+    else:
+        logger.warning(f"AI Vision self-heal failed: {heal_res.get('error')}", component="ai_vision")
+    return heal_res
 
 @app.post("/api/settings/test-notification/{service}")
 async def test_notification(service: str, payload: dict, user: dict = Depends(require_admin)):
