@@ -329,6 +329,44 @@ export const api = {
     });
   },
 
+  // Natural Language Search (Feature 1)
+  async searchEvents(query, limit = 50) {
+    const params = new URLSearchParams({ q: query, limit });
+    return apiFetch(`/search/events?${params.toString()}`);
+  },
+
+  // Multi-Camera Incidents (Feature 2)
+  async getIncidents(limit = 50) {
+    return apiFetch(`/incidents?limit=${limit}`);
+  },
+
+  async getIncident(id) {
+    return apiFetch(`/incidents/${id}`);
+  },
+
+  async correlateIncidents() {
+    return apiFetch('/incidents/correlate', {
+      method: 'POST'
+    });
+  },
+
+  async deleteIncident(id) {
+    return apiFetch(`/incidents/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // Active Perimeter Deterrence (Feature 5)
+  async testDeterrenceTrigger(cameraName = 'Perimeter Sentry Test') {
+    return apiFetch(`/deterrence/test?camera_name=${encodeURIComponent(cameraName)}`, {
+      method: 'POST'
+    });
+  },
+
+  async getDeterrenceStatus() {
+    return apiFetch('/deterrence/status');
+  },
+
   // System Settings & Control Panel
   async getSettings() {
     return apiFetch('/settings');

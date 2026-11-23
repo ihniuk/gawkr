@@ -511,6 +511,12 @@ class CameraStreamWorker:
         )
         save_event_to_db(event)
         
+        try:
+            from app.incident_correlator import ingest_event_into_incidents
+            ingest_event_into_incidents(event)
+        except Exception:
+            pass
+
         if self.notification_callback:
             self.notification_callback(event)
             
@@ -801,6 +807,18 @@ class CameraStreamWorker:
             evaluated_detections = self._evaluate_vehicle_motion(alert_detections, loop_start)
             self.latest_detections = evaluated_detections
 
+            # Active Deterrence loiter & perimeter dwell evaluation
+            try:
+                from app.deterrence import active_deterrence_manager
+                active_deterrence_manager.evaluate_dwell(
+                    self.camera.id,
+                    self.camera.name,
+                    [d.label for d in evaluated_detections],
+                    loop_start
+                )
+            except Exception:
+                pass
+
             active_trigger_detections = [
                 d for d in evaluated_detections
                 if not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
@@ -853,6 +871,12 @@ class CameraStreamWorker:
                 )
                 save_event_to_db(event)
                 
+                try:
+                    from app.incident_correlator import ingest_event_into_incidents
+                    ingest_event_into_incidents(event)
+                except Exception:
+                    pass
+
                 if self.notification_callback:
                     self.notification_callback(event)
                     

@@ -42,4 +42,23 @@ class NotificationManager:
             "telemetry": telemetry
         })
 
+    async def send_deterrence_alert(self, deterrence_data: Dict[str, Any]):
+        await self.broadcast({
+            "type": "ACTIVE_DETERRENCE_TRIGGERED",
+            "data": deterrence_data
+        })
+
+    def broadcast_sync(self, message: Dict[str, Any]):
+        """Helper to safely broadcast from background threads."""
+        if not self.active_connections:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.run_coroutine_threadsafe(self.broadcast(message), loop)
+            else:
+                loop.run_until_complete(self.broadcast(message))
+        except Exception:
+            pass
+
 notification_manager = NotificationManager()

@@ -68,8 +68,10 @@ async def lifespan(app: FastAPI):
     # Pre-warm disk stats and hardware capabilities caches in background for instant UI response
     from app.storage import get_storage_disk_stats
     from app.hardware import detect_hardware_capabilities
+    from app.incident_correlator import backfill_all_incidents
     asyncio.create_task(asyncio.to_thread(get_storage_disk_stats))
     asyncio.create_task(asyncio.to_thread(detect_hardware_capabilities))
+    asyncio.create_task(asyncio.to_thread(backfill_all_incidents))
     
     # Background task for periodic telemetry broadcast & Home Assistant MQTT snapshot push
     last_mqtt_snap_push = 0.0
@@ -698,6 +700,84 @@ async def get_events(
 async def delete_event(event_id: str, user: dict = Depends(require_admin)):
     delete_event_from_db(event_id)
     return {"status": "deleted", "id": event_id}
+
+# ----------------- NATURAL LANGUAGE EVENT SEARCH (FEATURE 1) -----------------
+
+@app.get("/api/search/events")
+async def natural_event_search(
+    q: str = Query(..., description="Natural language search query"),
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Executes a natural language clip search using SQLite FTS5 index and temporal heuristics."""
+    from app.search import execute_natural_search
+    return execute_natural_search(query=q, limit=limit)
+
+# ----------------- MULTI-CAMERA INCIDENT STITCHING (FEATURE 2) -----------------
+
+@app.get("/api/incidents")
+async def get_incidents(
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Returns cross-camera incidents and unified subject journeys."""
+    from app.storage import load_recent_incidents_from_db
+    from app.incident_correlator import backfill_all_incidents
+    incidents = load_recent_incidents_from_db(limit=limit)
+    if not incidents:
+        # Auto-backfill on first access if empty
+        await asyncio.to_thread(backfill_all_incidents)
+        incidents = load_recent_incidents_from_db(limit=limit)
+    return incidents
+
+@app.get("/api/incidents/{incident_id}")
+async def get_incident(incident_id: str, user: dict = Depends(get_current_user)):
+    """Returns a single incident with full details and sequential event IDs."""
+    from app.storage import get_incident_by_id
+    inc = get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return inc
+
+@app.post("/api/incidents/correlate")
+async def correlate_incidents(user: dict = Depends(require_admin)):
+    """Triggers complete multi-camera incident correlation and backfill across historical events."""
+    from app.incident_correlator import backfill_all_incidents
+    count = await asyncio.to_thread(backfill_all_incidents)
+    return {"status": "ok", "correlated_incidents": count}
+
+@app.delete("/api/incidents/{incident_id}")
+async def delete_incident(incident_id: str, user: dict = Depends(require_admin)):
+    """Deletes an incident record."""
+    from app.storage import delete_incident_from_db
+    deleted = delete_incident_from_db(incident_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return {"status": "deleted", "id": incident_id}
+
+# ----------------- ACTIVE DETERRENCE & SENTRY TRIGGERS (FEATURE 5) -----------------
+
+@app.post("/api/deterrence/test")
+async def trigger_test_deterrence(
+    camera_name: str = Query("Perimeter Sentry Test", description="Camera name for simulation"),
+    user: dict = Depends(require_admin)
+):
+    """Test-fires the active deterrence pipeline (MQTT lights, sirens, WebSocket alert)."""
+    from app.deterrence import active_deterrence_manager
+    res = active_deterrence_manager.trigger_test(camera_name=camera_name)
+    return {"status": "triggered", "result": res}
+
+@app.get("/api/deterrence/status")
+async def get_deterrence_status(user: dict = Depends(get_current_user)):
+    """Returns current active deterrence telemetry and trigger history."""
+    from app.deterrence import active_deterrence_manager
+    settings = get_system_settings()
+    return {
+        "enabled": settings.deterrence.enabled,
+        "config": settings.deterrence.model_dump(),
+        "last_trigger_time": active_deterrence_manager.last_trigger_time,
+        "history": active_deterrence_manager.trigger_history
+    }
 
 # ----------------- SYSTEM SETTINGS & CONTROL PANEL -----------------
 

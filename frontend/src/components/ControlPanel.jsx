@@ -132,6 +132,40 @@ export default function ControlPanel({
   const [twoFactorError, setTwoFactorError] = useState('');
   const [twoFactorFeedback, setTwoFactorFeedback] = useState('');
 
+  // Active Perimeter Deterrence State (Feature 5)
+  const [deterrenceStatus, setDeterrenceStatus] = useState(null);
+  const [isTestingDeterrence, setIsTestingDeterrence] = useState(false);
+  const [deterrenceFeedback, setDeterrenceFeedback] = useState(null);
+
+  const fetchDeterrenceStatus = async () => {
+    try {
+      const res = await api.getDeterrenceStatus();
+      setDeterrenceStatus(res);
+    } catch (err) {
+      console.error('Failed to load deterrence status:', err);
+    }
+  };
+
+  const handleTestDeterrence = async () => {
+    setIsTestingDeterrence(true);
+    setDeterrenceFeedback(null);
+    try {
+      const res = await api.testDeterrenceTrigger('Front Porch (Sentry Simulation)');
+      setDeterrenceFeedback({
+        success: true,
+        message: `✓ Deterrence action fired successfully! Target: ${res.result?.target_entity || 'Home Assistant'} (${res.result?.ha_service})`
+      });
+      fetchDeterrenceStatus();
+    } catch (err) {
+      setDeterrenceFeedback({
+        success: false,
+        message: `✗ Failed to trigger deterrence test: ${err.message}`
+      });
+    } finally {
+      setIsTestingDeterrence(false);
+    }
+  };
+
   const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
   const loadSettings = async () => {
@@ -194,6 +228,23 @@ export default function ControlPanel({
                 enabled: true
               }
             ]
+          };
+        }
+        if (!s.deterrence) {
+          s.deterrence = {
+            enabled: false,
+            night_only: true,
+            night_start_hour: 22,
+            night_end_hour: 6,
+            loiter_threshold_seconds: 10,
+            ha_enabled: true,
+            ha_service: 'light.turn_on',
+            ha_entity_id: 'light.front_porch',
+            ha_flash: true,
+            ha_flash_count: 3,
+            critical_notification: true,
+            cooldown_seconds: 120,
+            action_note: 'Automated Floodlight / Deterrence Triggered'
           };
         }
         setSettings(s);
@@ -375,6 +426,8 @@ export default function ControlPanel({
       loadSystemLogs();
     } else if (activeTab === 'ai_vision') {
       fetchAiVisionHealth();
+    } else if (activeTab === 'deterrence') {
+      fetchDeterrenceStatus();
     }
   }, [activeTab]);
 
@@ -1176,6 +1229,24 @@ export default function ControlPanel({
           onClick={() => setActiveTab('notifications')}
         >
           <Bell size={14} /> Notifications
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 120px',
+            border: 'none',
+            borderRadius: '8px',
+            background: activeTab === 'deterrence' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'deterrence' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => setActiveTab('deterrence')}
+        >
+          <ShieldAlert size={14} /> Active Deterrence
         </button>
 
         <button
@@ -3351,6 +3422,348 @@ export default function ControlPanel({
               </div>
             )}
           </div>
+        </div>
+      )}
+      {/* ----------------- TAB: ACTIVE DETERRENCE & SENTRY AUTOMATION (FEATURE 5) ----------------- */}
+      {activeTab === 'deterrence' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Header Panel */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <ShieldAlert size={20} color="var(--accent-cyan)" />
+                  <span>Smart Perimeter Active Deterrence</span>
+                  <span style={{
+                    fontSize: '0.72rem',
+                    padding: '2px 8px',
+                    borderRadius: '5px',
+                    fontWeight: 700,
+                    background: settings.deterrence?.enabled ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                    color: settings.deterrence?.enabled ? '#34d399' : '#f87171',
+                    border: settings.deterrence?.enabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)'
+                  }}>
+                    {settings.deterrence?.enabled ? 'ARMED & ACTIVE' : 'STANDBY / DISABLED'}
+                  </span>
+                </h3>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Automatically trigger Home Assistant floodlights, flashing strobe sirens, and high-priority alarms when people dwell in active detection zones past configurable thresholds.
+                </p>
+              </div>
+
+              {isAdmin && (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    className="btn-glass"
+                    onClick={handleTestDeterrence}
+                    disabled={isTestingDeterrence}
+                    style={{ fontSize: '0.76rem', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Zap size={14} className={isTestingDeterrence ? 'animate-spin' : ''} color="var(--accent-cyan)" />
+                    <span>{isTestingDeterrence ? 'Firing Deterrence...' : 'Test Deterrence Trigger'}</span>
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={handleSaveSettings}
+                    disabled={isSaving}
+                    style={{ fontSize: '0.76rem', padding: '8px 16px' }}
+                  >
+                    <Save size={14} /> {isSaving ? 'Saving...' : 'Save Deterrence Config'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {deterrenceFeedback && (
+              <div style={{
+                marginTop: '14px',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                background: deterrenceFeedback.success ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                color: deterrenceFeedback.success ? '#34d399' : '#f87171',
+                border: deterrenceFeedback.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)'
+              }}>
+                {deterrenceFeedback.message}
+              </div>
+            )}
+          </div>
+
+          {/* Cards Grid */}
+          <div className="control-panel-grid">
+            {/* Card 1: Loiter & Schedule Trigger Rules */}
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Activity size={18} color="var(--accent-cyan)" />
+                  <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>Perimeter Loitering Rules</span>
+                </div>
+                <div className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    id="deterrence-armed-toggle"
+                    checked={settings.deterrence?.enabled ?? false}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, enabled: e.target.checked }
+                    })}
+                  />
+                  <label htmlFor="deterrence-armed-toggle"></label>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600 }}>Loitering Dwell Threshold</label>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', fontWeight: 700 }}>
+                      {settings.deterrence?.loiter_threshold_seconds ?? 10} seconds
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="3"
+                    max="60"
+                    step="1"
+                    value={settings.deterrence?.loiter_threshold_seconds ?? 10}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, loiter_threshold_seconds: parseInt(e.target.value) }
+                    })}
+                    style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Trigger deterrence when a person remains in view longer than this duration.
+                  </div>
+                </div>
+
+                <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <label htmlFor="night-only-toggle" style={{ fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
+                      Night-Only Sentry Mode
+                    </label>
+                    <input
+                      type="checkbox"
+                      id="night-only-toggle"
+                      checked={settings.deterrence?.night_only ?? true}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        deterrence: { ...settings.deterrence, night_only: e.target.checked }
+                      })}
+                      style={{ accentColor: 'var(--accent-cyan)' }}
+                    />
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '10px' }}>
+                    Only trigger active deterrence outside daylight hours to avoid nuisance daytime activations.
+                  </div>
+
+                  {settings.deterrence?.night_only && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                          Start Hour (24h)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="23"
+                          className="glass-input"
+                          value={settings.deterrence?.night_start_hour ?? 22}
+                          onChange={(e) => setSettings({
+                            ...settings,
+                            deterrence: { ...settings.deterrence, night_start_hour: parseInt(e.target.value) || 0 }
+                          })}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                          End Hour (24h)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="23"
+                          className="glass-input"
+                          value={settings.deterrence?.night_end_hour ?? 6}
+                          onChange={(e) => setSettings({
+                            ...settings,
+                            deterrence: { ...settings.deterrence, night_end_hour: parseInt(e.target.value) || 0 }
+                          })}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Deterrence Cooldown
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="number"
+                      min="30"
+                      max="600"
+                      className="glass-input"
+                      value={settings.deterrence?.cooldown_seconds ?? 120}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        deterrence: { ...settings.deterrence, cooldown_seconds: parseInt(e.target.value) || 60 }
+                      })}
+                      style={{ width: '100px' }}
+                    />
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>seconds between deterrence triggers</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Home Assistant Hardware & Scene Triggers */}
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                <Zap size={18} color="var(--accent-cyan)" />
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>Home Assistant Sentry Actions</span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Target Home Assistant Entity ID
+                  </label>
+                  <input
+                    type="text"
+                    className="glass-input"
+                    value={settings.deterrence?.ha_entity_id ?? 'light.front_porch'}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, ha_entity_id: e.target.value }
+                    })}
+                    placeholder="light.front_porch, switch.garden_floodlight, siren.alarm"
+                    style={{ width: '100%' }}
+                  />
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Entity in your Home Assistant instance to actuate upon perimeter breach.
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Service Call
+                  </label>
+                  <select
+                    className="glass-input"
+                    value={settings.deterrence?.ha_service ?? 'light.turn_on'}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, ha_service: e.target.value }
+                    })}
+                    style={{ width: '100%' }}
+                  >
+                    <option value="light.turn_on">light.turn_on (Floodlights / Porch Light)</option>
+                    <option value="switch.turn_on">switch.turn_on (Siren / Relay Switch)</option>
+                    <option value="scene.turn_on">scene.turn_on (Emergency Security Scene)</option>
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    id="ha-flash-toggle"
+                    checked={settings.deterrence?.ha_flash ?? true}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, ha_flash: e.target.checked }
+                    })}
+                    style={{ accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <label htmlFor="ha-flash-toggle" style={{ fontSize: '0.78rem', color: '#e2e8f0', cursor: 'pointer' }}>
+                    Flash / Strobe Lights (Flash count: {settings.deterrence?.ha_flash_count ?? 3} pulses)
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    id="crit-notif-toggle"
+                    checked={settings.deterrence?.critical_notification ?? true}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, critical_notification: e.target.checked }
+                    })}
+                    style={{ accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <label htmlFor="crit-notif-toggle" style={{ fontSize: '0.78rem', color: '#e2e8f0', cursor: 'pointer' }}>
+                    Broadcast Critical Push Notification to Android / Web App
+                  </label>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Action Log Note
+                  </label>
+                  <input
+                    type="text"
+                    className="glass-input"
+                    value={settings.deterrence?.action_note ?? 'Automated Floodlight / Deterrence Triggered'}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, action_note: e.target.value }
+                    })}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div style={{
+                  padding: '10px 12px',
+                  background: 'rgba(6, 182, 212, 0.08)',
+                  borderRadius: '8px',
+                  fontSize: '0.72rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  <strong style={{ color: 'var(--accent-cyan)' }}>Home Assistant MQTT Auto-Discovery:</strong>
+                  <div>Publishes to <code>binary_sensor.gawkr_active_deterrence</code> and <code>homeassistant/deterrence/action</code> so Home Assistant automations can trigger natively without manual YAML configuration.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Trigger History Log */}
+          {deterrenceStatus?.history && deterrenceStatus.history.length > 0 && (
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                <Terminal size={16} color="var(--accent-cyan)" />
+                <span style={{ fontWeight: 700, fontSize: '0.92rem' }}>Recent Deterrence Trigger Log</span>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
+                      <th style={{ padding: '8px 12px' }}>Timestamp</th>
+                      <th style={{ padding: '8px 12px' }}>Camera</th>
+                      <th style={{ padding: '8px 12px' }}>Loiter Dwell</th>
+                      <th style={{ padding: '8px 12px' }}>Target Entity</th>
+                      <th style={{ padding: '8px 12px' }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deterrenceStatus.history.map((h, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                          {new Date(h.timestamp * 1000).toLocaleString()}
+                        </td>
+                        <td style={{ padding: '8px 12px', fontWeight: 600 }}>{h.camera_name}</td>
+                        <td style={{ padding: '8px 12px', color: '#f59e0b' }}>{h.dwell_seconds}s</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--accent-cyan)' }}>{h.target_entity}</td>
+                        <td style={{ padding: '8px 12px' }}>{h.action}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {/* ----------------- TAB 5: USERS & ACCESS MANAGEMENT ----------------- */}
