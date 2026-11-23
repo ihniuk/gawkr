@@ -129,6 +129,14 @@ public class LoginActivity extends AppCompatActivity {
                     
                     if (response.isSuccessful() && !respStr.isEmpty()) {
                         JSONObject respJson = new JSONObject(respStr);
+                        boolean require2fa = respJson.optBoolean("require_2fa", false);
+                        String challengeToken = respJson.optString("challenge_token", "");
+
+                        if (require2fa && !challengeToken.isEmpty()) {
+                            mainHandler.post(() -> promptTwoFactorCode(serverUrl, challengeToken, username, password));
+                            return;
+                        }
+
                         String token = respJson.optString("token", "");
                         
                         if (!token.isEmpty()) {
@@ -170,6 +178,92 @@ public class LoginActivity extends AppCompatActivity {
                 mainHandler.post(() -> {
                     setLoading(false);
                     showError("Connection failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void promptTwoFactorCode(String serverUrl, String challengeToken, String username, String password) {
+        setLoading(false);
+        final EditText inputCode = new EditText(this);
+        inputCode.setHint("123456 or ABCD-1234");
+        inputCode.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        inputCode.setGravity(android.view.Gravity.CENTER);
+        inputCode.setTextSize(20f);
+
+        new androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Two-Factor Authentication")
+                .setMessage("Enter the 6-digit verification code from your authenticator app:")
+                .setView(inputCode)
+                .setCancelable(false)
+                .setPositiveButton("Verify & Sign In", (dialog, which) -> {
+                    String code = inputCode.getText().toString().trim();
+                    if (!code.isEmpty()) {
+                        perform2faVerification(serverUrl, challengeToken, code, username, password);
+                    } else {
+                        showError("Please enter the verification code");
+                    }
+                })
+                .setNegativeButton("Cancel", (dialog, which) -> dialog.dismiss())
+                .show();
+    }
+
+    private void perform2faVerification(String serverUrl, String challengeToken, String code, String username, String password) {
+        setLoading(true);
+        new Thread(() -> {
+            try {
+                JSONObject jsonBody = new JSONObject();
+                jsonBody.put("challenge_token", challengeToken);
+                jsonBody.put("code", code);
+
+                RequestBody body = RequestBody.create(
+                        jsonBody.toString(),
+                        MediaType.parse("application/json; charset=utf-8")
+                );
+
+                Request request = new Request.Builder()
+                        .url(serverUrl + "/api/auth/2fa/verify-login")
+                        .post(body)
+                        .build();
+
+                try (Response response = client.newCall(request).execute()) {
+                    String respStr = response.body() != null ? response.body().string() : "";
+                    if (response.isSuccessful() && !respStr.isEmpty()) {
+                        JSONObject respJson = new JSONObject(respStr);
+                        String token = respJson.optString("token", "");
+                        if (!token.isEmpty()) {
+                            String role = respJson.optString("role", "admin");
+                            String respUsername = respJson.optString("username", username);
+
+                            prefs.edit()
+                                    .putString("server_url", serverUrl)
+                                    .putString("username", respUsername)
+                                    .putString("password", password)
+                                    .putString("role", role)
+                                    .putString("token", token)
+                                    .commit();
+
+                            Intent serviceIntent = new Intent(LoginActivity.this, GawkrPushService.class);
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                startForegroundService(serviceIntent);
+                            } else {
+                                startService(serviceIntent);
+                            }
+
+                            mainHandler.post(() -> launchMainActivity(serverUrl, token, respUsername, role));
+                            return;
+                        }
+                    }
+
+                    mainHandler.post(() -> {
+                        setLoading(false);
+                        showError("Invalid two-factor authentication code.");
+                    });
+                }
+            } catch (Exception e) {
+                mainHandler.post(() -> {
+                    setLoading(false);
+                    showError("Verification failed: " + e.getMessage());
                 });
             }
         }).start();

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import time
 import uuid
 from typing import Optional, List, Dict, Any
@@ -11,9 +12,11 @@ from fastapi.responses import StreamingResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+import app.storage as storage
 from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR
 from app.models import (
     UserLogin, UserResponse, UserCreate, UserPasswordReset, UserPasswordChange, UserRoleUpdate, UserItem,
+    TOTPSetupResponse, TOTPEnableRequest, TOTPEnableResponse, TOTPDisableRequest, TwoFactorLoginRequest,
     CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
     AIMemoryConfig, AIMemoryItem,
@@ -21,8 +24,11 @@ from app.models import (
 )
 from app.auth import (
     authenticate_user, create_access_token, decode_access_token, get_current_user, require_admin,
-    verify_ha_integration_auth,
+    verify_ha_integration_auth, hash_password,
     create_stream_ticket, verify_stream_ticket,
+    create_2fa_challenge_token, verify_2fa_challenge_token,
+    generate_totp_secret, generate_totp_qr_data_url, verify_totp_code,
+    generate_backup_codes, verify_and_consume_backup_code,
     list_users, add_new_user, reset_user_password, update_user_role, delete_user
 )
 from app.discovery import discover_network_cameras, verify_camera_credentials, _test_rtsp_stream_cv2
@@ -200,7 +206,19 @@ async def login(credentials: UserLogin, request: Request):
             detail="Incorrect username or password. Warning: 2 failed attempts will automatically block this IP address."
         )
 
-    # 2. On successful authentication, reset failed attempts counter
+    # 2. Check if user has Two-Factor Authentication enabled
+    if user.get("is_totp_enabled"):
+        challenge_token = create_2fa_challenge_token(user["username"], user["role"])
+        logger.info(f"Two-factor challenge issued for user '{credentials.username}' from {client_ip}", component="auth")
+        return UserResponse(
+            username=user["username"],
+            role=user["role"],
+            token=None,
+            require_2fa=True,
+            challenge_token=challenge_token
+        )
+
+    # 3. On successful single-factor authentication, reset failed attempts counter
     reset_ip_failures(client_ip)
     record_login_audit(credentials.username, client_ip, user_agent, "SUCCESS")
     logger.info(f"Successful login for user '{credentials.username}' from {client_ip}", component="auth")
@@ -208,8 +226,136 @@ async def login(credentials: UserLogin, request: Request):
     return UserResponse(
         username=user["username"],
         role=user["role"],
-        token=token
+        token=token,
+        require_2fa=False
     )
+
+@app.post("/api/auth/2fa/verify-login", response_model=UserResponse)
+async def verify_two_factor_login(payload: TwoFactorLoginRequest, request: Request):
+    """Completes login authentication by verifying a 6-digit TOTP code or emergency backup code."""
+    client_ip = extract_client_ip(request)
+    user_agent = request.headers.get("user-agent", "Unknown")
+
+    if is_ip_blocked(client_ip):
+        record_login_audit("unknown", client_ip, user_agent, "BLOCKED", "IP blocked due to repeated failed logins")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access Denied: Your IP address ({client_ip}) is currently blocked."
+        )
+
+    challenge_data = verify_2fa_challenge_token(payload.challenge_token)
+    if not challenge_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Two-factor session has expired or is invalid. Please sign in again."
+        )
+
+    username = challenge_data.get("sub")
+    user = storage.get_user_by_username(username)
+    if not user or not user.get("is_totp_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Two-factor authentication is not active for this account."
+        )
+
+    code = payload.code.strip()
+    is_valid_totp = verify_totp_code(user.get("totp_secret", ""), code)
+    is_valid_backup = False if is_valid_totp else verify_and_consume_backup_code(username, code)
+
+    if not is_valid_totp and not is_valid_backup:
+        now_blocked = record_login_failure(client_ip, max_failures=2)
+        status_label = "BLOCKED" if now_blocked else "FAILED"
+        reason = "Incorrect 2FA authenticator code" + (" (IP blocked after 2 failures)" if now_blocked else " (Attempt 1 of 2)")
+        record_login_audit(username, client_ip, user_agent, status_label, reason)
+        logger.warning(f"Failed 2FA code attempt for '{username}' from {client_ip} (blocked={now_blocked})", component="auth")
+        if now_blocked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 2 failed verification attempts."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication code. Please check your authenticator app and try again."
+        )
+
+    # 2FA Success!
+    reset_ip_failures(client_ip)
+    success_reason = "2FA TOTP Verified" if is_valid_totp else "2FA Backup Code Verified"
+    record_login_audit(username, client_ip, user_agent, "SUCCESS", success_reason)
+    logger.info(f"Successful 2FA authentication for user '{username}' from {client_ip} ({success_reason})", component="auth")
+    token = create_access_token({"sub": user["username"], "role": user["role"]})
+    return UserResponse(
+        username=user["username"],
+        role=user["role"],
+        token=token,
+        require_2fa=False
+    )
+
+@app.get("/api/auth/2fa/status")
+async def get_two_factor_status(user: dict = Depends(get_current_user)):
+    """Returns 2FA status and remaining backup recovery codes count."""
+    user_data = storage.get_user_by_username(user["username"])
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+    backup_codes_left = 0
+    if user_data.get("backup_codes"):
+        try:
+            backup_codes_left = len(json.loads(user_data["backup_codes"]))
+        except Exception:
+            backup_codes_left = 0
+    return {
+        "username": user["username"],
+        "is_totp_enabled": user_data.get("is_totp_enabled", False),
+        "backup_codes_count": backup_codes_left
+    }
+
+@app.post("/api/auth/2fa/setup", response_model=TOTPSetupResponse)
+async def setup_two_factor(user: dict = Depends(get_current_user)):
+    """Generates a new TOTP secret and QR code for scanning in an authenticator app."""
+    secret = generate_totp_secret()
+    otpauth_url, qr_data_url = generate_totp_qr_data_url(user["username"], secret, issuer_name="Gawkr NVR")
+    return TOTPSetupResponse(
+        secret=secret,
+        qr_code_data_url=qr_data_url,
+        otpauth_url=otpauth_url
+    )
+
+@app.post("/api/auth/2fa/enable", response_model=TOTPEnableResponse)
+async def enable_two_factor(payload: TOTPEnableRequest, user: dict = Depends(get_current_user)):
+    """Confirms initial 6-digit code pairing and enables 2FA with emergency backup recovery codes."""
+    if not verify_totp_code(payload.secret, payload.code):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid 6-digit verification code. Please confirm the time on your authenticator device and try again."
+        )
+    plain_codes, hashed_codes = generate_backup_codes(count=8)
+    storage.enable_user_totp(user["username"], payload.secret, json.dumps(hashed_codes))
+    logger.info(f"Two-factor authentication enabled for user '{user['username']}'", component="auth")
+    return TOTPEnableResponse(
+        status="success",
+        message="Two-Factor Authentication is now actively protecting your account.",
+        backup_codes=plain_codes
+    )
+
+@app.post("/api/auth/2fa/disable")
+async def disable_two_factor(payload: TOTPDisableRequest, user: dict = Depends(get_current_user)):
+    """Disables 2FA after password confirmation."""
+    user_data = storage.get_user_by_username(user["username"])
+    if not user_data or user_data["password_hash"] != hash_password(payload.password):
+        raise HTTPException(status_code=401, detail="Incorrect password. 2FA cannot be disabled.")
+    storage.disable_user_totp(user["username"])
+    logger.info(f"Two-factor authentication disabled by user '{user['username']}'", component="auth")
+    return {"status": "disabled", "message": "Two-factor authentication has been disabled."}
+
+@app.put("/api/users/{username}/reset-2fa")
+async def admin_reset_two_factor(username: str, user: dict = Depends(require_admin)):
+    """Administrator emergency override to reset 2FA for a locked-out user."""
+    target_user = storage.get_user_by_username(username)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    storage.disable_user_totp(username)
+    logger.warning(f"Admin '{user['username']}' reset 2FA for user '{username}'", component="auth")
+    return {"status": "reset", "message": f"2FA has been disabled for user '{username}'."}
 
 @app.post("/api/auth/change-password")
 async def self_service_change_password(payload: UserPasswordChange):

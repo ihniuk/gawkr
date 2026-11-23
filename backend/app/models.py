@@ -12,9 +12,32 @@ class UserLogin(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
-    username: str
-    role: str
-    token: str
+    username: Optional[str] = None
+    role: Optional[str] = None
+    token: Optional[str] = None
+    require_2fa: bool = False
+    challenge_token: Optional[str] = None
+
+class TOTPSetupResponse(BaseModel):
+    secret: str
+    qr_code_data_url: str
+    otpauth_url: str
+
+class TOTPEnableRequest(BaseModel):
+    secret: str
+    code: str
+
+class TOTPEnableResponse(BaseModel):
+    status: str
+    message: str
+    backup_codes: List[str]
+
+class TOTPDisableRequest(BaseModel):
+    password: str
+
+class TwoFactorLoginRequest(BaseModel):
+    challenge_token: str
+    code: str
 
 class UserCreate(BaseModel):
     username: str
@@ -36,6 +59,7 @@ class UserItem(BaseModel):
     username: str
     role: str
     created_at: float
+    is_totp_enabled: bool = False
 
 class DetectionZone(BaseModel):
     id: str

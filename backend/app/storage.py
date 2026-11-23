@@ -85,9 +85,22 @@ def init_db():
         username TEXT PRIMARY KEY,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'viewer',
-        created_at REAL NOT NULL
+        created_at REAL NOT NULL,
+        totp_secret TEXT DEFAULT NULL,
+        is_totp_enabled INTEGER DEFAULT 0,
+        backup_codes TEXT DEFAULT NULL
     );
     """)
+
+    # Ensure 2FA columns exist on existing users table
+    cursor.execute("PRAGMA table_info(users)")
+    existing_user_cols = [c[1] for c in cursor.fetchall()]
+    if "totp_secret" not in existing_user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL")
+    if "is_totp_enabled" not in existing_user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_totp_enabled INTEGER DEFAULT 0")
+    if "backup_codes" not in existing_user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN backup_codes TEXT DEFAULT NULL")
 
     # Seed default users if table is empty
     cursor.execute("SELECT COUNT(*) FROM users;")
@@ -546,7 +559,7 @@ def purge_expired_storage() -> Dict[str, int]:
 def get_user_by_username(username: str) -> Optional[dict]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, password_hash, role, created_at FROM users WHERE username = ?", (username,))
+    cursor.execute("SELECT username, password_hash, role, created_at, totp_secret, is_totp_enabled, backup_codes FROM users WHERE username = ?", (username,))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -555,16 +568,54 @@ def get_user_by_username(username: str) -> Optional[dict]:
         "username": row[0],
         "password_hash": row[1],
         "role": row[2],
-        "created_at": row[3]
+        "created_at": row[3],
+        "totp_secret": row[4],
+        "is_totp_enabled": bool(row[5] == 1),
+        "backup_codes": row[6]
     }
 
 def list_all_users() -> List[dict]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, role, created_at FROM users ORDER BY created_at ASC")
+    cursor.execute("SELECT username, role, created_at, is_totp_enabled FROM users ORDER BY created_at ASC")
     rows = cursor.fetchall()
     conn.close()
-    return [{"username": r[0], "role": r[1], "created_at": r[2]} for r in rows]
+    return [{"username": r[0], "role": r[1], "created_at": r[2], "is_totp_enabled": bool(r[3] == 1)} for r in rows]
+
+def enable_user_totp(username: str, secret: str, backup_codes_json: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users 
+        SET totp_secret = ?, is_totp_enabled = 1, backup_codes = ?
+        WHERE username = ?
+    """, (secret, backup_codes_json, username))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+def disable_user_totp(username: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users 
+        SET totp_secret = NULL, is_totp_enabled = 0, backup_codes = NULL
+        WHERE username = ?
+    """, (username,))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+def update_user_backup_codes(username: str, backup_codes_json: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET backup_codes = ? WHERE username = ?", (backup_codes_json, username))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 def create_user_in_db(username: str, password_hash: str, role: str) -> dict:
     conn = sqlite3.connect(DB_PATH)

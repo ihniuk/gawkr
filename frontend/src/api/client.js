@@ -121,9 +121,50 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password })
     });
+    if (res.require_2fa) {
+      return res;
+    }
     authStorage.setToken(res.token);
     authStorage.setUser({ username: res.username, role: res.role });
     return res;
+  },
+
+  async verify2faLogin(challengeToken, code) {
+    const res = await apiFetch('/auth/2fa/verify-login', {
+      method: 'POST',
+      body: JSON.stringify({ challenge_token: challengeToken, code })
+    });
+    authStorage.setToken(res.token);
+    authStorage.setUser({ username: res.username, role: res.role });
+    return res;
+  },
+
+  async get2faStatus() {
+    return apiFetch('/auth/2fa/status');
+  },
+
+  async setup2fa() {
+    return apiFetch('/auth/2fa/setup', { method: 'POST' });
+  },
+
+  async enable2fa(secret, code) {
+    return apiFetch('/auth/2fa/enable', {
+      method: 'POST',
+      body: JSON.stringify({ secret, code })
+    });
+  },
+
+  async disable2fa(password) {
+    return apiFetch('/auth/2fa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password })
+    });
+  },
+
+  async adminReset2fa(username) {
+    return apiFetch(`/users/${username}/reset-2fa`, {
+      method: 'PUT'
+    });
   },
 
   async changePassword(username, currentPassword, newPassword) {

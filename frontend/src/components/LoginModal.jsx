@@ -5,6 +5,9 @@ import { evaluatePasswordStrength } from '../utils/security';
 
 export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
   const [activeTab, setActiveTab] = useState('login'); // 'login' | 'reset'
+  const [step, setStep] = useState('credentials'); // 'credentials' | '2fa'
+  const [challengeToken, setChallengeToken] = useState('');
+  const [totpCode, setTotpCode] = useState('');
   const [savedCreds, setSavedCreds] = useState(() => {
     try {
       const s = localStorage.getItem('gawkr_saved_creds');
@@ -48,6 +51,12 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
     setSuccessMsg('');
     try {
       const res = await api.login(username, password);
+      if (res.require_2fa) {
+        setChallengeToken(res.challenge_token);
+        setStep('2fa');
+        setTotpCode('');
+        return;
+      }
       if (rememberMe) {
         localStorage.setItem('gawkr_saved_creds', JSON.stringify({ username, password }));
       }
@@ -55,6 +64,25 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
       onClose();
     } catch (err) {
       setErrorMsg(err.message || 'Authentication failed');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVerify2fa = async (e) => {
+    if (e) e.preventDefault();
+    if (!totpCode.trim()) return;
+    setIsLoading(true);
+    setErrorMsg('');
+    try {
+      const res = await api.verify2faLogin(challengeToken, totpCode.trim());
+      if (rememberMe) {
+        localStorage.setItem('gawkr_saved_creds', JSON.stringify({ username, password }));
+      }
+      onLoginSuccess(res);
+      onClose();
+    } catch (err) {
+      setErrorMsg(err.message || 'Two-factor authentication failed');
     } finally {
       setIsLoading(false);
     }
@@ -68,6 +96,12 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
     setSuccessMsg('');
     api.login(user, pass)
       .then(res => {
+        if (res.require_2fa) {
+          setChallengeToken(res.challenge_token);
+          setStep('2fa');
+          setTotpCode('');
+          return;
+        }
         onLoginSuccess(res);
         onClose();
       })
@@ -204,7 +238,70 @@ export default function LoginModal({ isOpen, onClose, onLoginSuccess }) {
           </div>
         )}
 
-        {activeTab === 'login' ? (
+        {step === '2fa' ? (
+          <form onSubmit={handleVerify2fa}>
+            <div style={{
+              textAlign: 'center',
+              marginBottom: '16px',
+              padding: '12px',
+              background: 'rgba(6, 182, 212, 0.08)',
+              borderRadius: '8px',
+              border: '1px solid rgba(6, 182, 212, 0.2)'
+            }}>
+              <Smartphone size={32} color="var(--accent-cyan)" style={{ margin: '0 auto 8px' }} />
+              <div style={{ fontSize: '0.92rem', fontWeight: 700, color: '#fff', marginBottom: '4px' }}>
+                Two-Factor Authentication
+              </div>
+              <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
+                Enter the 6-digit verification code from your authenticator app, or an 8-character recovery code.
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <label htmlFor="modal_totp" style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                Security Code
+              </label>
+              <input
+                id="modal_totp"
+                name="totpCode"
+                type="text"
+                autoComplete="one-time-code"
+                autoFocus
+                placeholder="123456 or ABCD-1234"
+                className="glass-input"
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value)}
+                style={{
+                  textAlign: 'center',
+                  fontSize: '1.25rem',
+                  letterSpacing: '0.15em',
+                  fontFamily: 'var(--font-mono)',
+                  fontWeight: 700,
+                  color: 'var(--accent-cyan)'
+                }}
+                required
+              />
+            </div>
+
+            <button
+              type="submit"
+              className="btn-primary"
+              style={{ width: '100%', justifyContent: 'center', marginBottom: '10px' }}
+              disabled={isLoading || !totpCode.trim()}
+            >
+              {isLoading ? 'Verifying...' : 'Verify & Sign In'}
+            </button>
+
+            <button
+              type="button"
+              className="btn-glass"
+              style={{ width: '100%', justifyContent: 'center', fontSize: '0.76rem' }}
+              onClick={() => { setStep('credentials'); setErrorMsg(''); }}
+            >
+              Back to Credentials
+            </button>
+          </form>
+        ) : activeTab === 'login' ? (
           <>
             <form onSubmit={handleSubmit}>
               <div style={{ marginBottom: '12px' }}>

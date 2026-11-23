@@ -6,7 +6,8 @@ import {
   Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X,
   Brain, Package, Truck, User, Plus, Edit2, Tag, Check, Info,
   Camera, Upload, Image as ImageIcon,
-  Terminal, Globe, Activity, Filter, Search, FileText, Lock
+  Terminal, Globe, Activity, Filter, Search, FileText, Lock,
+  Smartphone, QrCode, Copy, Download
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
 import { evaluatePasswordStrength } from '../utils/security';
@@ -118,6 +119,18 @@ export default function ControlPanel({
   const [isLoadingBlockedIps, setIsLoadingBlockedIps] = useState(false);
   const [unblockFeedback, setUnblockFeedback] = useState('');
   const [manualBlockIp, setManualBlockIp] = useState('');
+
+  // 2FA Security State
+  const [twoFactorStatus, setTwoFactorStatus] = useState(null);
+  const [is2faSetupOpen, setIs2faSetupOpen] = useState(false);
+  const [twoFactorSetupData, setTwoFactorSetupData] = useState(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorBackupCodes, setTwoFactorBackupCodes] = useState(null);
+  const [twoFactorDisablePassword, setTwoFactorDisablePassword] = useState('');
+  const [is2faDisableOpen, setIs2faDisableOpen] = useState(false);
+  const [is2faLoading, setIs2faLoading] = useState(false);
+  const [twoFactorError, setTwoFactorError] = useState('');
+  const [twoFactorFeedback, setTwoFactorFeedback] = useState('');
 
   const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
@@ -357,6 +370,7 @@ export default function ControlPanel({
       loadUsers();
       loadLoginAudit();
       loadBlockedIps();
+      load2faStatus();
     } else if (activeTab === 'logs') {
       loadSystemLogs();
     } else if (activeTab === 'ai_vision') {
@@ -488,6 +502,85 @@ export default function ControlPanel({
       setTimeout(() => setUserActionSuccess(''), 4000);
     } catch (err) {
       setUserActionError(err.message || 'Failed to delete user');
+    }
+  };
+
+  const load2faStatus = async () => {
+    try {
+      const st = await api.get2faStatus();
+      setTwoFactorStatus(st);
+    } catch (e) {
+      console.warn('Could not load 2FA status:', e);
+    }
+  };
+
+  const handleOpen2faSetup = async () => {
+    setIs2faLoading(true);
+    setTwoFactorError('');
+    setTwoFactorCode('');
+    setTwoFactorBackupCodes(null);
+    try {
+      const data = await api.setup2fa();
+      setTwoFactorSetupData(data);
+      setIs2faSetupOpen(true);
+    } catch (e) {
+      alert('Failed to initialize 2FA setup: ' + (e.message || e));
+    } finally {
+      setIs2faLoading(false);
+    }
+  };
+
+  const handleConfirm2faEnable = async (e) => {
+    if (e) e.preventDefault();
+    if (!twoFactorSetupData || !twoFactorCode.trim()) return;
+    setIs2faLoading(true);
+    setTwoFactorError('');
+    try {
+      const res = await api.enable2fa(twoFactorSetupData.secret, twoFactorCode.trim());
+      setTwoFactorBackupCodes(res.backup_codes);
+      setTwoFactorFeedback('✓ Two-Factor Authentication is now actively enabled!');
+      setTimeout(() => setTwoFactorFeedback(''), 5000);
+      load2faStatus();
+      loadUsers();
+    } catch (e) {
+      setTwoFactorError(e.message || 'Verification failed. Please check the code and try again.');
+    } finally {
+      setIs2faLoading(false);
+    }
+  };
+
+  const handleDisable2fa = async (e) => {
+    if (e) e.preventDefault();
+    if (!twoFactorDisablePassword) return;
+    setIs2faLoading(true);
+    setTwoFactorError('');
+    try {
+      await api.disable2fa(twoFactorDisablePassword);
+      setIs2faDisableOpen(false);
+      setTwoFactorDisablePassword('');
+      setTwoFactorFeedback('✓ Two-Factor Authentication disabled.');
+      setTimeout(() => setTwoFactorFeedback(''), 5000);
+      load2faStatus();
+      loadUsers();
+    } catch (e) {
+      setTwoFactorError(e.message || 'Failed to disable 2FA');
+    } finally {
+      setIs2faLoading(false);
+    }
+  };
+
+  const handleAdminReset2fa = async (targetUsername) => {
+    if (!window.confirm(`Reset and disable 2FA for user '${targetUsername}'? Use this if the user lost their authenticator device.`)) return;
+    try {
+      await api.adminReset2fa(targetUsername);
+      setUserActionSuccess(`✓ 2FA has been reset and disabled for '${targetUsername}'`);
+      setTimeout(() => setUserActionSuccess(''), 4000);
+      loadUsers();
+      if (activeUser.username === targetUsername) {
+        load2faStatus();
+      }
+    } catch (e) {
+      setUserActionError(e.message || 'Failed to reset 2FA');
     }
   };
 
@@ -3386,6 +3479,389 @@ export default function ControlPanel({
             </div>
           )}
 
+          {/* 2FA Setup Dialog Modal */}
+          {is2faSetupOpen && twoFactorSetupData && (
+            <div className="modal-overlay" onClick={() => setIs2faSetupOpen(false)} style={{ zIndex: 1100 }}>
+              <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      background: 'rgba(6, 182, 212, 0.15)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <Smartphone size={16} color="var(--accent-cyan)" />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Enable Two-Factor Authentication</h3>
+                      <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Scan with Google Authenticator, Authy, or 1Password</p>
+                    </div>
+                  </div>
+                  <button className="btn-glass" onClick={() => setIs2faSetupOpen(false)} style={{ padding: '6px' }}><X size={15} /></button>
+                </div>
+
+                {twoFactorError && (
+                  <div style={{
+                    background: 'rgba(244, 63, 94, 0.12)',
+                    border: '1px solid rgba(244, 63, 94, 0.3)',
+                    color: '#fb7185',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    marginBottom: '14px'
+                  }}>
+                    {twoFactorError}
+                  </div>
+                )}
+
+                {twoFactorBackupCodes ? (
+                  <div>
+                    <div style={{
+                      textAlign: 'center',
+                      padding: '14px',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                      borderRadius: '10px',
+                      marginBottom: '16px'
+                    }}>
+                      <CheckCircle size={28} color="var(--accent-emerald)" style={{ margin: '0 auto 6px' }} />
+                      <div style={{ fontWeight: 700, color: '#fff', fontSize: '0.92rem' }}>2FA Activated Successfully!</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        Save your emergency backup recovery codes now. Each code can be used once if you lose your phone.
+                      </div>
+                    </div>
+
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '8px',
+                      background: 'rgba(0, 0, 0, 0.4)',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      marginBottom: '14px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.88rem',
+                      textAlign: 'center',
+                      fontWeight: 700,
+                      color: 'var(--accent-cyan)'
+                    }}>
+                      {twoFactorBackupCodes.map((code, idx) => (
+                        <div key={idx} style={{ padding: '4px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: '4px' }}>
+                          {code}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        style={{ flex: 1, justifyContent: 'center', fontSize: '0.76rem' }}
+                        onClick={() => {
+                          navigator.clipboard.writeText(twoFactorBackupCodes.join('\n'));
+                          alert('✓ Backup codes copied to clipboard!');
+                        }}
+                      >
+                        <Copy size={13} /> Copy Codes
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        style={{ flex: 1, justifyContent: 'center', fontSize: '0.76rem' }}
+                        onClick={() => {
+                          const blob = new Blob([`GAWKR NVR EMERGENCY BACKUP CODES\nAccount: ${activeUser.username}\nGenerated: ${new Date().toISOString()}\n\n` + twoFactorBackupCodes.join('\n')], { type: 'text/plain' });
+                          const a = document.createElement('a');
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `gawkr_2fa_backup_codes_${activeUser.username}.txt`;
+                          a.click();
+                        }}
+                      >
+                        <Download size={13} /> Download .txt
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      style={{ width: '100%', justifyContent: 'center' }}
+                      onClick={() => setIs2faSetupOpen(false)}
+                    >
+                      Done & Close
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleConfirm2faEnable}>
+                    <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                      <div style={{
+                        display: 'inline-block',
+                        padding: '10px',
+                        background: '#030712',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(6, 182, 212, 0.3)',
+                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+                        marginBottom: '10px'
+                      }}>
+                        <img
+                          src={twoFactorSetupData.qr_code_data_url}
+                          alt="2FA QR Code"
+                          style={{ width: '160px', height: '160px', display: 'block', borderRadius: '6px' }}
+                        />
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Can't scan? Manual entry key:
+                      </div>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        color: 'var(--accent-cyan)',
+                        letterSpacing: '0.1em',
+                        marginTop: '2px',
+                        userSelect: 'all'
+                      }}>
+                        {twoFactorSetupData.secret}
+                      </div>
+                    </div>
+
+                    <div style={{ marginBottom: '16px' }}>
+                      <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textAlign: 'center' }}>
+                        Enter 6-digit confirmation code from your app:
+                      </label>
+                      <input
+                        type="text"
+                        autoFocus
+                        placeholder="123456"
+                        maxLength={6}
+                        className="glass-input"
+                        value={twoFactorCode}
+                        onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, ''))}
+                        style={{
+                          textAlign: 'center',
+                          fontSize: '1.25rem',
+                          fontFamily: 'var(--font-mono)',
+                          fontWeight: 700,
+                          letterSpacing: '0.2em',
+                          color: 'var(--accent-cyan)'
+                        }}
+                        required
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        onClick={() => setIs2faSetupOpen(false)}
+                        disabled={is2faLoading}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn-primary"
+                        disabled={is2faLoading || twoFactorCode.length < 6}
+                      >
+                        <ShieldCheck size={14} /> {is2faLoading ? 'Verifying...' : 'Activate 2FA'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 2FA Disable Confirmation Modal */}
+          {is2faDisableOpen && (
+            <div className="modal-overlay" onClick={() => setIs2faDisableOpen(false)} style={{ zIndex: 1100 }}>
+              <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      background: 'rgba(244, 63, 94, 0.15)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <Lock size={16} color="#fb7185" />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Disable Two-Factor Auth</h3>
+                      <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Confirm your password to turn off 2FA</p>
+                    </div>
+                  </div>
+                  <button className="btn-glass" onClick={() => setIs2faDisableOpen(false)} style={{ padding: '6px' }}><X size={15} /></button>
+                </div>
+
+                {twoFactorError && (
+                  <div style={{
+                    background: 'rgba(244, 63, 94, 0.12)',
+                    border: '1px solid rgba(244, 63, 94, 0.3)',
+                    color: '#fb7185',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    marginBottom: '14px'
+                  }}>
+                    {twoFactorError}
+                  </div>
+                )}
+
+                <form onSubmit={handleDisable2fa}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                      Account Password
+                    </label>
+                    <input
+                      type="password"
+                      autoFocus
+                      className="glass-input"
+                      placeholder="Enter your current password"
+                      value={twoFactorDisablePassword}
+                      onChange={(e) => setTwoFactorDisablePassword(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn-glass"
+                      onClick={() => setIs2faDisableOpen(false)}
+                      disabled={is2faLoading}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      style={{ background: '#e11d48' }}
+                      disabled={is2faLoading || !twoFactorDisablePassword}
+                    >
+                      {is2faLoading ? 'Disabling...' : 'Confirm Disable 2FA'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Two-Factor Authentication Security Card */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '10px',
+                  background: twoFactorStatus?.is_totp_enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(6, 182, 212, 0.15)',
+                  border: twoFactorStatus?.is_totp_enabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(6, 182, 212, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <Smartphone size={22} color={twoFactorStatus?.is_totp_enabled ? 'var(--accent-emerald)' : 'var(--accent-cyan)'} />
+                </div>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <h3 style={{ fontSize: '0.98rem', fontWeight: 700 }}>Two-Factor Authentication (TOTP)</h3>
+                    {twoFactorStatus?.is_totp_enabled ? (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        border: '1px solid rgba(16, 185, 129, 0.3)',
+                        color: 'var(--accent-emerald)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        fontWeight: 700
+                      }}>
+                        ✓ Active & Protected
+                      </span>
+                    ) : (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        background: 'rgba(245, 158, 11, 0.15)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: 'var(--accent-amber)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        fontWeight: 700
+                      }}>
+                        Inactive
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Secure your account with time-based 6-digit one-time codes from Google Authenticator, Microsoft Authenticator, Apple Passwords, or 1Password.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                {twoFactorStatus?.is_totp_enabled ? (
+                  <button
+                    className="btn-glass"
+                    onClick={() => { setIs2faDisableOpen(true); setTwoFactorDisablePassword(''); setTwoFactorError(''); }}
+                    style={{ color: '#fb7185', borderColor: 'rgba(244, 63, 94, 0.3)', fontSize: '0.8rem' }}
+                  >
+                    <Lock size={14} /> Disable 2FA
+                  </button>
+                ) : (
+                  <button
+                    className="btn-primary"
+                    onClick={handleOpen2faSetup}
+                    disabled={is2faLoading}
+                    style={{ fontSize: '0.8rem' }}
+                  >
+                    <Smartphone size={14} /> {is2faLoading ? 'Loading Setup...' : 'Enable 2FA Protection'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {twoFactorFeedback && (
+              <div style={{
+                marginTop: '14px',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: 'rgba(16, 185, 129, 0.12)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                color: 'var(--accent-emerald)',
+                fontSize: '0.8rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <CheckCircle size={15} /> {twoFactorFeedback}
+              </div>
+            )}
+
+            {twoFactorStatus?.is_totp_enabled && (
+              <div style={{
+                marginTop: '14px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '8px',
+                padding: '10px 14px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)'
+              }}>
+                <span>Offline Emergency Backup Codes: <b style={{ color: '#fff' }}>{twoFactorStatus.backup_codes_count}</b> remaining</span>
+                <span style={{ fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>Single-use recovery supported</span>
+              </div>
+            )}
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: isAdmin ? 'minmax(0, 1.8fr) minmax(0, 1.2fr)' : '1fr', gap: '20px' }}>
             {/* Users Table Card */}
             <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
@@ -3425,6 +3901,7 @@ export default function ControlPanel({
                       <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: 'var(--text-muted)' }}>
                         <th style={{ padding: '10px 8px', fontWeight: 600 }}>User</th>
                         <th style={{ padding: '10px 8px', fontWeight: 600 }}>Role</th>
+                        <th style={{ padding: '10px 8px', fontWeight: 600 }}>2FA Security</th>
                         <th style={{ padding: '10px 8px', fontWeight: 600 }}>Registered</th>
                         <th style={{ padding: '10px 8px', fontWeight: 600, textAlign: 'right' }}>Actions</th>
                       </tr>
@@ -3507,6 +3984,35 @@ export default function ControlPanel({
                               )}
                             </td>
 
+                            <td style={{ padding: '12px 8px' }}>
+                              {u.is_totp_enabled ? (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                                  color: 'var(--accent-emerald)',
+                                  padding: '2px 7px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.70rem',
+                                  fontWeight: 700
+                                }}>
+                                  <Check size={11} /> Active
+                                </span>
+                              ) : (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  color: 'var(--text-muted)',
+                                  fontSize: '0.70rem',
+                                  padding: '2px 7px'
+                                }}>
+                                  Disabled
+                                </span>
+                              )}
+                            </td>
+
                             <td style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: '0.74rem' }}>
                               {u.created_at ? new Date(u.created_at * 1000).toLocaleDateString() : 'System Default'}
                             </td>
@@ -3522,6 +4028,23 @@ export default function ControlPanel({
                                     style={{ padding: '4px 8px', fontSize: '0.72rem', gap: '4px' }}
                                   >
                                     <Key size={12} color="var(--accent-cyan)" /> Reset Pass
+                                  </button>
+                                )}
+
+                                {/* Admin Reset 2FA */}
+                                {isAdmin && u.is_totp_enabled && (
+                                  <button
+                                    className="btn-glass"
+                                    onClick={() => handleAdminReset2fa(u.username)}
+                                    title={`Reset and disable 2FA for ${u.username}`}
+                                    style={{
+                                      padding: '4px 8px',
+                                      fontSize: '0.72rem',
+                                      color: '#fb7185',
+                                      borderColor: 'rgba(244, 63, 94, 0.3)'
+                                    }}
+                                  >
+                                    Reset 2FA
                                   </button>
                                 )}
 
