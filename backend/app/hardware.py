@@ -8,14 +8,14 @@ from typing import Dict, Any, List
 _cached_hardware_info: Dict[str, Any] = {}
 _cache_timestamp: float = 0.0
 
-def detect_hardware_capabilities() -> Dict[str, Any]:
+def detect_hardware_capabilities(force_refresh: bool = False) -> Dict[str, Any]:
     """
     Detects host CPU cores, NVIDIA GPU presence, driver versions, and available FFmpeg hardware encoders/decoders.
-    Caches results for 60 seconds to avoid repeated process calls.
+    Caches results for 10 minutes to avoid repeated process calls and eliminate Control Panel latency.
     """
     global _cached_hardware_info, _cache_timestamp
     now = time.time()
-    if _cached_hardware_info and (now - _cache_timestamp < 60.0):
+    if not force_refresh and _cached_hardware_info and (now - _cache_timestamp < 600.0):
         return _cached_hardware_info
 
     cpu_cores = os.cpu_count() or 4

@@ -125,65 +125,72 @@ export default function ControlPanel({
     setIsLoading(true);
     setErrorMessage('');
     try {
-      const res = await api.getSettings();
-      const s = res.settings || {};
-      if (!s.hardware) {
-        s.hardware = {
-          hw_accel_backend: 'auto',
-          video_encoder: 'auto',
-          encoding_preset: 'ultrafast',
-          encoding_crf: 26
-        };
+      const [settingsResult, capsResult] = await Promise.allSettled([
+        api.getSettings(),
+        api.getHardwareCapabilities()
+      ]);
+
+      if (settingsResult.status === 'fulfilled') {
+        const res = settingsResult.value;
+        const s = res.settings || {};
+        if (!s.hardware) {
+          s.hardware = {
+            hw_accel_backend: 'auto',
+            video_encoder: 'auto',
+            encoding_preset: 'ultrafast',
+            encoding_crf: 26
+          };
+        }
+        if (!s.detection) {
+          s.detection = {
+            global_confidence_threshold: 0.50,
+            person_min_confidence: 0.45,
+            vehicle_min_confidence: 0.60,
+            animal_min_confidence: 0.45
+          };
+        }
+        if (!s.ai_memory) {
+          s.ai_memory = {
+            enabled: true,
+            items: [
+              {
+                id: 'mem_amazon',
+                category: 'courier',
+                name: 'Amazon Delivery',
+                cues: 'Blue Prime van, Mercedes/Ford van, courier wearing blue/dark vest carrying boxes or packages with Amazon smile logo',
+                action_note: 'Package delivery / courier drop-off',
+                threat_bias: 'Safe',
+                enabled: true
+              },
+              {
+                id: 'mem_royalmail',
+                category: 'courier',
+                name: 'Royal Mail',
+                cues: 'Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages',
+                action_note: 'Postal delivery / mail drop',
+                threat_bias: 'Safe',
+                enabled: true
+              },
+              {
+                id: 'mem_dpd',
+                category: 'courier',
+                name: 'DPD / Evri',
+                cues: 'White van with red cube DPD logo, or courier delivering parcels',
+                action_note: 'Courier package delivery',
+                threat_bias: 'Safe',
+                enabled: true
+              }
+            ]
+          };
+        }
+        setSettings(s);
+        setDiskStats(res.disk_stats);
+      } else {
+        throw new Error(settingsResult.reason?.message || 'Failed to load system settings');
       }
-      if (!s.detection) {
-        s.detection = {
-          global_confidence_threshold: 0.50,
-          person_min_confidence: 0.45,
-          vehicle_min_confidence: 0.60,
-          animal_min_confidence: 0.45
-        };
-      }
-      if (!s.ai_memory) {
-        s.ai_memory = {
-          enabled: true,
-          items: [
-            {
-              id: 'mem_amazon',
-              category: 'courier',
-              name: 'Amazon Delivery',
-              cues: 'Blue Prime van, Mercedes/Ford van, courier wearing blue/dark vest carrying boxes or packages with Amazon smile logo',
-              action_note: 'Package delivery / courier drop-off',
-              threat_bias: 'Safe',
-              enabled: true
-            },
-            {
-              id: 'mem_royalmail',
-              category: 'courier',
-              name: 'Royal Mail',
-              cues: 'Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages',
-              action_note: 'Postal delivery / mail drop',
-              threat_bias: 'Safe',
-              enabled: true
-            },
-            {
-              id: 'mem_dpd',
-              category: 'courier',
-              name: 'DPD / Evri',
-              cues: 'White van with red cube DPD logo, or courier delivering parcels',
-              action_note: 'Courier package delivery',
-              threat_bias: 'Safe',
-              enabled: true
-            }
-          ]
-        };
-      }
-      setSettings(s);
-      setDiskStats(res.disk_stats);
-      try {
-        const caps = await api.getHardwareCapabilities();
-        setHwCaps(caps);
-      } catch (e) {
-        console.warn('Hardware capabilities probe error:', e);
+
+      if (capsResult.status === 'fulfilled') {
+        setHwCaps(capsResult.value);
       }
     } catch (err) {
       setErrorMessage(err.message || 'Failed to load system settings');

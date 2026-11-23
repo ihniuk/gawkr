@@ -13,10 +13,15 @@ export class NvrWebSocket {
       return;
     }
 
+    const token = authStorage.getToken();
+    if (!token) {
+      // Don't connect or retry if user is not authenticated
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const token = authStorage.getToken();
-    const tokenQuery = token ? `?token=${encodeURIComponent(token)}` : '';
+    const tokenQuery = `?token=${encodeURIComponent(token)}`;
     const wsUrl = `${protocol}//${host}/api/ws/events${tokenQuery}`;
 
     try {

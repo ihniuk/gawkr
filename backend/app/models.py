@@ -109,6 +109,7 @@ class CameraModel(BaseModel):
     model: str
     is_simulation: bool = False
     is_online: bool = False
+    error: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
     settings: CameraSettings = Field(default_factory=CameraSettings)
 

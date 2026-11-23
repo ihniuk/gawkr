@@ -58,6 +58,12 @@ async def lifespan(app: FastAPI):
             mqtt_service.sync_all_cameras(camera_manager.get_all(), startup_settings.notifications.mqtt)
     except Exception as e:
         logger.warning(f"Initial Home Assistant MQTT sync skipped: {e}", component="system")
+
+    # Pre-warm disk stats and hardware capabilities caches in background for instant UI response
+    from app.storage import get_storage_disk_stats
+    from app.hardware import detect_hardware_capabilities
+    asyncio.create_task(asyncio.to_thread(get_storage_disk_stats))
+    asyncio.create_task(asyncio.to_thread(detect_hardware_capabilities))
     
     # Background task for periodic telemetry broadcast & Home Assistant MQTT snapshot push
     last_mqtt_snap_push = 0.0
@@ -389,26 +395,90 @@ async def capture_snapshot(camera_id: str, user: dict = Depends(get_current_user
         raise HTTPException(status_code=500, detail="Failed to capture snapshot frame")
     return Response(content=jpeg, media_type="image/jpeg")
 
-@app.get("/api/snapshots/{filename}")
+@app.post("/api/cameras/{camera_id}/snapshot")
+async def save_manual_camera_snapshot(camera_id: str, user: dict = Depends(get_current_user)):
+    """Captures a pristine frame, saves to storage, and logs as a viewable event in timeline."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera not found or inactive")
+    with worker.frame_lock:
+        frame = worker.latest_frame.copy() if worker.latest_frame is not None else None
+    if frame is None:
+        raise HTTPException(status_code=503, detail="Camera feed inactive or no frames received yet")
+
+    from app.storage import save_snapshot_image, save_event_to_db
+    from app.models import DetectionEvent, DetectionObject
+    event_id = str(uuid.uuid4())[:8]
+    snap_url = save_snapshot_image(camera_id, frame, event_id)
+    evt = DetectionEvent(
+        id=event_id,
+        camera_id=camera_id,
+        camera_name=worker.camera.name,
+        timestamp=time.time(),
+        objects=[DetectionObject(label="snapshot", confidence=1.0, box=[0.0, 0.0, 0.0, 0.0])],
+        snapshot_url=snap_url,
+        video_clip_url=None,
+        ai_description=f"Manual high-resolution snapshot captured from {worker.camera.name}.",
+        threat_level="Safe"
+    )
+    save_event_to_db(evt)
+    if worker.notification_callback:
+        worker.notification_callback(evt)
+    return {"status": "captured", "snapshot_url": snap_url, "event": evt.model_dump()}
+
+@app.api_route("/api/snapshots/{filename}", methods=["GET", "HEAD"])
 async def get_snapshot_file(filename: str):
+    """Serves JPEG snapshot images with HTTP GET and HEAD support."""
     clean_name = Path(filename).name
     if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid snapshot filename")
-    file_path = (SNAPSHOTS_DIR / clean_name).resolve()
-    if not file_path.is_relative_to(SNAPSHOTS_DIR.resolve()) or not file_path.is_file():
+    
+    from app.storage import resolve_storage_dir
+    settings = get_system_settings()
+    snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR)
+    
+    file_path = (snap_dir / clean_name).resolve()
+    if not file_path.is_file() and snap_dir != SNAPSHOTS_DIR:
+        file_path = (SNAPSHOTS_DIR / clean_name).resolve()
+        
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Snapshot not found")
-    return FileResponse(str(file_path), media_type="image/jpeg")
+        
+    return FileResponse(
+        str(file_path),
+        media_type="image/jpeg",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=86400"
+        }
+    )
 
-@app.get("/api/recordings/{filename}")
+@app.api_route("/api/recordings/{filename}", methods=["GET", "HEAD"])
 async def get_recording_file(filename: str):
-    """Serves recorded H.264 MP4 clips with HTTP Range seeking support for smooth web playback."""
+    """Serves recorded H.264 MP4 clips with HTTP Range seeking support and HEAD validation."""
     clean_name = Path(filename).name
     if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid recording filename")
-    file_path = (RECORDINGS_DIR / clean_name).resolve()
-    if not file_path.is_relative_to(RECORDINGS_DIR.resolve()) or not file_path.is_file():
+        
+    from app.storage import resolve_storage_dir
+    settings = get_system_settings()
+    rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR)
+    
+    file_path = (rec_dir / clean_name).resolve()
+    if not file_path.is_file() and rec_dir != RECORDINGS_DIR:
+        file_path = (RECORDINGS_DIR / clean_name).resolve()
+        
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Recording clip not found or still processing")
-    return FileResponse(str(file_path), media_type="video/mp4")
+        
+    return FileResponse(
+        str(file_path),
+        media_type="video/mp4",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600"
+        }
+    )
 
 @app.post("/api/cameras/{camera_id}/test-alert")
 async def trigger_camera_test_alert(camera_id: str, user: dict = Depends(require_admin)):
@@ -486,19 +556,19 @@ async def delete_event(event_id: str, user: dict = Depends(require_admin)):
 # ----------------- SYSTEM SETTINGS & CONTROL PANEL -----------------
 
 @app.get("/api/settings")
-async def get_settings(user: dict = Depends(get_current_user)):
+async def get_settings(refresh: bool = False, user: dict = Depends(get_current_user)):
     """Returns current system configuration and real-time storage disk usage statistics."""
     settings = get_system_settings()
-    disk_stats = get_storage_disk_stats()
+    disk_stats = get_storage_disk_stats(force_refresh=refresh)
     return {
         "settings": settings.model_dump(),
         "disk_stats": disk_stats
     }
 
 @app.get("/api/settings/hardware-capabilities")
-async def get_hardware_capabilities(user: dict = Depends(get_current_user)):
+async def get_hardware_capabilities(refresh: bool = False, user: dict = Depends(get_current_user)):
     """Detects CPU cores, NVIDIA GPU presence, Intel QuickSync availability, and active codec engines."""
-    return detect_hardware_capabilities()
+    return detect_hardware_capabilities(force_refresh=refresh)
 
 @app.put("/api/settings")
 async def update_settings(new_settings: SystemSettings, user: dict = Depends(require_admin)):

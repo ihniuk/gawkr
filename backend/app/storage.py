@@ -385,7 +385,7 @@ def get_system_settings() -> SystemSettings:
     return defaults
 
 def save_system_settings(settings: SystemSettings):
-    global _cached_sys_settings, _cached_sys_settings_time
+    global _cached_sys_settings, _cached_sys_settings_time, _cached_disk_stats
     
     # Auto-resolve and sanitize directories before saving
     settings.storage.recordings_dir = str(resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR))
@@ -393,6 +393,7 @@ def save_system_settings(settings: SystemSettings):
 
     _cached_sys_settings = settings
     _cached_sys_settings_time = time.time()
+    _cached_disk_stats = None
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -402,8 +403,16 @@ def save_system_settings(settings: SystemSettings):
     conn.commit()
     conn.close()
 
-def get_storage_disk_stats() -> Dict[str, Any]:
-    """Calculates disk drive space and total recordings / snapshots directory byte usage."""
+_cached_disk_stats: Optional[Dict[str, Any]] = None
+_cached_disk_stats_time: float = 0.0
+
+def get_storage_disk_stats(force_refresh: bool = False) -> Dict[str, Any]:
+    """Calculates disk drive space and total recordings / snapshots directory byte usage with caching."""
+    global _cached_disk_stats, _cached_disk_stats_time
+    now = time.time()
+    if not force_refresh and _cached_disk_stats is not None and (now - _cached_disk_stats_time < 45.0):
+        return _cached_disk_stats
+
     settings = get_system_settings()
     rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR)
     snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR)
@@ -432,7 +441,7 @@ def get_storage_disk_stats() -> Dict[str, Any]:
     rec_count, rec_size = _dir_stats(rec_dir)
     snap_count, snap_size = _dir_stats(snap_dir)
 
-    return {
+    result = {
         "disk_total_gb": round(total_bytes / (1024**3), 1),
         "disk_used_gb": round(used_bytes / (1024**3), 1),
         "disk_free_gb": round(free_bytes / (1024**3), 1),
@@ -446,6 +455,9 @@ def get_storage_disk_stats() -> Dict[str, Any]:
         "retention_days": settings.storage.retention_days,
         "auto_purge_enabled": settings.storage.auto_purge_enabled
     }
+    _cached_disk_stats = result
+    _cached_disk_stats_time = now
+    return result
 
 def purge_expired_storage() -> Dict[str, int]:
     """
@@ -656,7 +668,7 @@ def clear_login_audit_logs():
 
 def is_ip_blocked(ip: str) -> bool:
     """Checks whether an IP address is actively blocked from authentication."""
-    if not ip:
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
         return False
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -671,7 +683,7 @@ def record_login_failure(ip: str, max_failures: int = 2) -> bool:
     If failures >= max_failures (2), locks the IP and marks is_blocked = 1.
     Returns True if the IP is now blocked.
     """
-    if not ip:
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
         return False
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

@@ -249,6 +249,10 @@ export const api = {
     return URL.createObjectURL(blob);
   },
 
+  async saveCameraSnapshot(id) {
+    return apiFetch(`/cameras/${id}/snapshot`, { method: 'POST' });
+  },
+
   // Discovery
   async scanNetwork() {
     return apiFetch('/discovery/scan', { method: 'POST' });

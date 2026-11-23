@@ -11,6 +11,7 @@ export default function VideoPlaybackModal({ event: initialEvent, onClose, onAdd
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [isMuted, setIsMuted] = useState(true);
   const [videoError, setVideoError] = useState(false);
+  const [snapshotError, setSnapshotError] = useState(false);
   const [isWaitingForClip, setIsWaitingForClip] = useState(!initialEvent?.video_clip_url);
   const pollTimerRef = useRef(null);
 
@@ -18,7 +19,17 @@ export default function VideoPlaybackModal({ event: initialEvent, onClose, onAdd
   useEffect(() => {
     if (initialEvent) {
       setVideoError(false);
-      const expectedClipUrl = initialEvent.video_clip_url || `/api/recordings/${initialEvent.camera_id}_${initialEvent.id}.mp4`;
+      setSnapshotError(false);
+      
+      // If event already has video clip recorded, trust it immediately
+      if (initialEvent.video_clip_url) {
+        setCurrentEvent(initialEvent);
+        setIsWaitingForClip(false);
+        setActiveTab('video');
+        return;
+      }
+
+      const expectedClipUrl = `/api/recordings/${initialEvent.camera_id}_${initialEvent.id}.mp4`;
       
       // Check if clip file is already ready on disk
       fetch(expectedClipUrl, { method: 'HEAD' })
@@ -29,12 +40,16 @@ export default function VideoPlaybackModal({ event: initialEvent, onClose, onAdd
             setActiveTab('video');
           } else {
             setCurrentEvent(initialEvent);
-            setIsWaitingForClip(true);
+            const isRecent = (Date.now() / 1000 - (initialEvent.timestamp || 0)) < 45;
+            setIsWaitingForClip(isRecent);
+            if (!isRecent) setActiveTab('snapshot');
           }
         })
         .catch(() => {
           setCurrentEvent(initialEvent);
-          setIsWaitingForClip(true);
+          const isRecent = (Date.now() / 1000 - (initialEvent.timestamp || 0)) < 45;
+          setIsWaitingForClip(isRecent);
+          if (!isRecent) setActiveTab('snapshot');
         });
     }
   }, [initialEvent?.id, initialEvent?.video_clip_url]);
@@ -223,11 +238,37 @@ export default function VideoPlaybackModal({ event: initialEvent, onClose, onAdd
               </div>
             )
           ) : (
-            <img
-              src={currentEvent.snapshot_url}
-              alt="Event Frame"
-              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-            />
+            !snapshotError ? (
+              <img
+                key={currentEvent.snapshot_url || currentEvent.id}
+                src={currentEvent.snapshot_url || `/api/snapshots/${currentEvent.camera_id}_${currentEvent.id}.jpg`}
+                alt="Event Snapshot Frame"
+                onError={() => setSnapshotError(true)}
+                style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+              />
+            ) : (
+              <div style={{
+                textAlign: 'center',
+                color: 'var(--text-muted)',
+                padding: '24px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '12px'
+              }}>
+                <AlertCircle size={32} color="var(--accent-amber)" />
+                <span style={{ fontSize: '0.88rem', color: '#fff' }}>
+                  Snapshot frame not found on disk or could not be loaded.
+                </span>
+                <button
+                  className="btn-glass"
+                  onClick={() => setSnapshotError(false)}
+                  style={{ fontSize: '0.78rem' }}
+                >
+                  <RefreshCw size={13} /> Retry Snapshot
+                </button>
+              </div>
+            )
           )}
         </div>
 

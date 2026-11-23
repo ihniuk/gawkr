@@ -201,6 +201,11 @@ export default function App() {
 
   const handleTakeSnapshot = async (cam) => {
     try {
+      try {
+        await api.saveCameraSnapshot(cam.id);
+      } catch (e) {
+        console.warn("Could not save snapshot event to database:", e);
+      }
       const snapUrl = await api.captureSnapshot(cam.id);
       const a = document.createElement('a');
       a.href = snapUrl;
