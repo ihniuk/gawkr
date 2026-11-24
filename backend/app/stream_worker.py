@@ -329,8 +329,10 @@ class CameraStreamWorker:
                 h = (h // 2) * 2
 
                 out_filename = f"{self.camera.id}_{event_id}.mp4"
-                out_path = RECORDINGS_DIR / out_filename
-                temp_out_path = RECORDINGS_DIR / f"tmp_{out_filename}"
+                from app.storage import resolve_storage_dir, get_system_settings
+                rec_dir = resolve_storage_dir(get_system_settings().storage.recordings_dir, RECORDINGS_DIR)
+                out_path = rec_dir / out_filename
+                temp_out_path = rec_dir / f"tmp_{out_filename}"
 
                 # Retrieve configured hardware backend and encoding parameters
                 hw_backend = getattr(cam_settings, 'hw_accel_backend', 'auto') if cam_settings else 'auto'
@@ -424,19 +426,30 @@ class CameraStreamWorker:
                         break
 
                 # Finish encoding
-                try:
-                    proc.stdin.close()
-                except Exception:
-                    pass
-                
                 stderr_text = ""
                 try:
-                    _, err_data = proc.communicate(timeout=10)
-                    if err_data:
-                        stderr_text = err_data.decode('utf-8', errors='ignore')
-                except Exception:
+                    if proc.stdin and not proc.stdin.closed:
+                        proc.stdin.close()
+                    proc.wait(timeout=15)
+                    if proc.stderr:
+                        err_bytes = proc.stderr.read()
+                        if err_bytes:
+                            stderr_text = err_bytes.decode('utf-8', errors='ignore')
+                except subprocess.TimeoutExpired:
                     proc.kill()
-                    stderr_text = "FFmpeg encoding timed out"
+                    stderr_text = "FFmpeg encoding timed out after 15s"
+                except Exception as e:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    stderr_text = f"FFmpeg wait error: {e}"
+                finally:
+                    if proc.stderr:
+                        try:
+                            proc.stderr.close()
+                        except Exception:
+                            pass
 
                 video_url = None
                 # Atomically promote temporary file to final output path
@@ -459,9 +472,11 @@ class CameraStreamWorker:
                         try: temp_out_path.unlink()
                         except Exception: pass
 
-                # Update DB and notify if valid clip was created
+                # Update DB and notify if valid clip was created (clear if failed)
                 if video_url:
                     update_event_video_clip(event_id, video_url)
+                else:
+                    update_event_video_clip(event_id, None)
 
                 if self.notification_callback:
                     # Send updated event notification

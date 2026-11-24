@@ -164,15 +164,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 # ----------------- AUTHENTICATION -----------------
 
 def extract_client_ip(request: Request) -> str:
+    # 1. Cloudflare canonical edge header
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip and cf_ip.strip():
+        return cf_ip.strip()
+    # 2. True-Client-IP header
+    true_ip = request.headers.get("true-client-ip")
+    if true_ip and true_ip.strip():
+        return true_ip.strip()
+    # 3. Direct real IP from reverse proxy
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
+    # 4. Standard proxy forwarded header (take rightmost appended by proxy)
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     if request.client:
         return request.client.host
     return "127.0.0.1"

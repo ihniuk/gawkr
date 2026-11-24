@@ -34,12 +34,15 @@ def authenticate_user(username: str, password: str) -> dict:
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = time.time() + (ACCESS_TOKEN_EXPIRE_MINUTES * 60)
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "typ": "access"})
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 def decode_access_token(token: str) -> dict:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # Enforce token type: only permit full access tokens on authenticated routes
+        if payload.get("typ") not in (None, "access"):
+            return None
         return payload
     except jwt.PyJWTError:
         return None
