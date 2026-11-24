@@ -655,6 +655,8 @@ export default function ControlPanel({
     }
   };
 
+  const handleSaveSettings = handleSave;
+
   const handleTestAiVision = async () => {
     setIsTestingVision(true);
     setVisionTestResult(null);
@@ -3464,7 +3466,7 @@ export default function ControlPanel({
                   </button>
                   <button
                     className="btn-primary"
-                    onClick={handleSaveSettings}
+                    onClick={handleSave}
                     disabled={isSaving}
                     style={{ fontSize: '0.76rem', padding: '8px 16px' }}
                   >
