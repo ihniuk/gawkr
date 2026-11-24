@@ -5,6 +5,7 @@ import shutil
 import os
 import hashlib
 import uuid
+import ipaddress
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import cv2
@@ -973,9 +974,25 @@ def clear_login_audit_logs():
 
 # ----------------- BRUTE-FORCE DEFENSE & BLOCKED IPS -----------------
 
+def is_trusted_or_local_ip(ip: str) -> bool:
+    """Returns True if the IP is a local loopback, Docker bridge gateway, or internal container network."""
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_loopback:
+            return True
+        # Docker default bridge subnets (172.16.0.0/12, which includes 172.17.x - 172.31.x, e.g. 172.29.0.1)
+        # where Docker proxy SNATs all incoming host/LAN connections:
+        if addr in ipaddress.ip_network("172.16.0.0/12"):
+            return True
+    except ValueError:
+        pass
+    return False
+
 def is_ip_blocked(ip: str) -> bool:
     """Checks whether an IP address is actively blocked from authentication."""
-    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+    if is_trusted_or_local_ip(ip):
         return False
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -984,13 +1001,14 @@ def is_ip_blocked(ip: str) -> bool:
     conn.close()
     return bool(row and row[0] == 1)
 
-def record_login_failure(ip: str, max_failures: int = 2) -> bool:
+def record_login_failure(ip: str, max_failures: int = 5) -> bool:
     """
     Increments failure count for the IP.
-    If failures >= max_failures (2), locks the IP and marks is_blocked = 1.
+    If failures >= max_failures (default 5), locks the IP and marks is_blocked = 1.
     Returns True if the IP is now blocked.
+    Trusted/internal Docker bridge and loopback IPs are never blocked.
     """
-    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+    if is_trusted_or_local_ip(ip):
         return False
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

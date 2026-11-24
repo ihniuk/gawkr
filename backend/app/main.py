@@ -187,7 +187,7 @@ async def login(credentials: UserLogin, request: Request):
     client_ip = extract_client_ip(request)
     user_agent = request.headers.get("user-agent", "Unknown")
 
-    # 1. Enforce automatic brute-force lockout (blocks after 2 failed logins)
+    # 1. Enforce automatic brute-force lockout (blocks external IPs after 5 failed logins)
     if is_ip_blocked(client_ip):
         record_login_audit(credentials.username, client_ip, user_agent, "BLOCKED", "IP blocked due to repeated failed logins")
         logger.warning(f"Rejected login attempt from blocked IP {client_ip} for username '{credentials.username}'", component="auth")
@@ -198,19 +198,19 @@ async def login(credentials: UserLogin, request: Request):
 
     user = authenticate_user(credentials.username, credentials.password)
     if not user:
-        now_blocked = record_login_failure(client_ip, max_failures=2)
-        reason = "Incorrect username or password" + (" (IP blocked after 2 failures)" if now_blocked else " (Attempt 1 of 2)")
+        now_blocked = record_login_failure(client_ip, max_failures=5)
+        reason = "Incorrect username or password" + (" (IP blocked after 5 failures)" if now_blocked else "")
         status_label = "BLOCKED" if now_blocked else "FAILED"
         record_login_audit(credentials.username, client_ip, user_agent, status_label, reason)
         logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} (blocked={now_blocked})", component="auth")
         if now_blocked:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 2 failed login attempts. An administrator can unblock it from the Control Panel."
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 5 failed login attempts. An administrator can unblock it from the Control Panel."
             )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password. Warning: 2 failed attempts will automatically block this IP address."
+            detail="Incorrect username or password. Please verify your credentials and try again."
         )
 
     # 2. Check if user has Two-Factor Authentication enabled
@@ -270,15 +270,15 @@ async def verify_two_factor_login(payload: TwoFactorLoginRequest, request: Reque
     is_valid_backup = False if is_valid_totp else verify_and_consume_backup_code(username, code)
 
     if not is_valid_totp and not is_valid_backup:
-        now_blocked = record_login_failure(client_ip, max_failures=2)
+        now_blocked = record_login_failure(client_ip, max_failures=5)
         status_label = "BLOCKED" if now_blocked else "FAILED"
-        reason = "Incorrect 2FA authenticator code" + (" (IP blocked after 2 failures)" if now_blocked else " (Attempt 1 of 2)")
+        reason = "Incorrect 2FA authenticator code" + (" (IP blocked after 5 failures)" if now_blocked else "")
         record_login_audit(username, client_ip, user_agent, status_label, reason)
         logger.warning(f"Failed 2FA code attempt for '{username}' from {client_ip} (blocked={now_blocked})", component="auth")
         if now_blocked:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 2 failed verification attempts."
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 5 failed verification attempts."
             )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
