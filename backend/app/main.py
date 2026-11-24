@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import re
 import time
 import uuid
 from typing import Optional, List, Dict, Any
@@ -11,9 +12,10 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, W
 from fastapi.responses import StreamingResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 import app.storage as storage
-from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR
+from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR, resolve_cors_origins
 from app.models import (
     UserLogin, UserResponse, UserCreate, UserPasswordReset, UserPasswordChange, UserRoleUpdate, UserItem,
     TOTPSetupResponse, TOTPEnableRequest, TOTPEnableResponse, TOTPDisableRequest, TwoFactorLoginRequest,
@@ -24,7 +26,7 @@ from app.models import (
 )
 from app.auth import (
     authenticate_user, create_access_token, decode_access_token, get_current_user, require_admin,
-    verify_ha_integration_auth, hash_password,
+    verify_ha_integration_auth, hash_password, extract_client_ip,
     create_stream_ticket, verify_stream_ticket,
     create_2fa_challenge_token, verify_2fa_challenge_token,
     generate_totp_secret, generate_totp_qr_data_url, verify_totp_code,
@@ -155,47 +157,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Gawkr AI-NVR Server", version="1.0.0", lifespan=lifespan)
 
-# Allow CORS for local dev servers and reverse proxies
+# Lightweight Starlette middleware to inject X-Content-Type-Options, X-Frame-Options, Referrer-Policy, and HSTS
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Tightened CORS restricted from * to configured hostnames (e.g. https://cams.ihni.uk) & local origins
+cors_origins = resolve_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https?://(cams\.ihni\.uk|localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.middleware("http")
-async def add_security_headers(request: Request, call_next):
-    response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "SAMEORIGIN"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    return response
-
 # ----------------- AUTHENTICATION -----------------
-
-def extract_client_ip(request: Request) -> str:
-    # 1. Cloudflare canonical edge header
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip and cf_ip.strip():
-        return cf_ip.strip()
-    # 2. True-Client-IP header
-    true_ip = request.headers.get("true-client-ip")
-    if true_ip and true_ip.strip():
-        return true_ip.strip()
-    # 3. Direct real IP from reverse proxy
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip and real_ip.strip():
-        return real_ip.strip()
-    # 4. Standard proxy forwarded header (take rightmost appended by proxy)
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
-        if parts:
-            return parts[-1]
-    if request.client:
-        return request.client.host
-    return "127.0.0.1"
 
 @app.post("/api/auth/login", response_model=UserResponse)
 async def login(credentials: UserLogin, request: Request):
@@ -594,47 +579,76 @@ async def save_manual_camera_snapshot(camera_id: str, user: dict = Depends(get_c
         worker.notification_callback(evt)
     return {"status": "captured", "snapshot_url": snap_url, "event": evt.model_dump()}
 
+ALLOWED_SNAPSHOT_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_RECORDING_EXTS = {".mp4", ".mkv", ".ts"}
+
 @app.api_route("/api/snapshots/{filename}", methods=["GET", "HEAD"])
 async def get_snapshot_file(filename: str):
-    """Serves JPEG snapshot images with HTTP GET and HEAD support."""
+    """Serves snapshot images with HTTP GET and HEAD support, path traversal defense, and format restriction."""
     clean_name = Path(filename).name
     if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid snapshot filename")
     
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", clean_name):
+        raise HTTPException(status_code=400, detail="Invalid characters in snapshot filename")
+        
+    ext = Path(clean_name).suffix.lower()
+    if ext not in ALLOWED_SNAPSHOT_EXTS:
+        raise HTTPException(status_code=400, detail=f"Disallowed snapshot file format: {ext}")
+    
     from app.storage import resolve_storage_dir
     settings = get_system_settings()
-    snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR)
+    snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR).resolve()
+    base_snap_dir = SNAPSHOTS_DIR.resolve()
     
     file_path = (snap_dir / clean_name).resolve()
-    if not file_path.is_file() and snap_dir != SNAPSHOTS_DIR:
-        file_path = (SNAPSHOTS_DIR / clean_name).resolve()
+    if not file_path.is_file() and snap_dir != base_snap_dir:
+        file_path = (base_snap_dir / clean_name).resolve()
+
+    # Enforce directory boundary isolation
+    if not (file_path.is_relative_to(snap_dir) or file_path.is_relative_to(base_snap_dir)):
+        raise HTTPException(status_code=403, detail="Access denied: path traversal restriction")
         
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Snapshot not found")
         
+    media_type = "image/png" if ext == ".png" else ("image/webp" if ext == ".webp" else "image/jpeg")
     return FileResponse(
         str(file_path),
-        media_type="image/jpeg",
+        media_type=media_type,
         headers={
             "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=86400"
+            "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff"
         }
     )
 
 @app.api_route("/api/recordings/{filename}", methods=["GET", "HEAD"])
 async def get_recording_file(filename: str):
-    """Serves recorded H.264 MP4 clips with HTTP Range seeking support and HEAD validation."""
+    """Serves recorded H.264 MP4 clips with HTTP Range seeking support, HEAD validation, and directory containment."""
     clean_name = Path(filename).name
     if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid recording filename")
         
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", clean_name):
+        raise HTTPException(status_code=400, detail="Invalid characters in recording filename")
+        
+    ext = Path(clean_name).suffix.lower()
+    if ext not in ALLOWED_RECORDING_EXTS:
+        raise HTTPException(status_code=400, detail=f"Disallowed recording file format: {ext}")
+        
     from app.storage import resolve_storage_dir
     settings = get_system_settings()
-    rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR)
+    rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR).resolve()
+    base_rec_dir = RECORDINGS_DIR.resolve()
     
     file_path = (rec_dir / clean_name).resolve()
-    if not file_path.is_file() and rec_dir != RECORDINGS_DIR:
-        file_path = (RECORDINGS_DIR / clean_name).resolve()
+    if not file_path.is_file() and rec_dir != base_rec_dir:
+        file_path = (base_rec_dir / clean_name).resolve()
+
+    # Enforce directory boundary isolation
+    if not (file_path.is_relative_to(rec_dir) or file_path.is_relative_to(base_rec_dir)):
+        raise HTTPException(status_code=403, detail="Access denied: path traversal restriction")
         
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Recording clip not found or still processing")
@@ -644,7 +658,8 @@ async def get_recording_file(filename: str):
         media_type="video/mp4",
         headers={
             "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600"
+            "Cache-Control": "public, max-age=3600",
+            "X-Content-Type-Options": "nosniff"
         }
     )
 
@@ -1237,7 +1252,8 @@ async def download_gawkr_apk():
             return FileResponse(
                 str(p),
                 media_type="application/vnd.android.package-archive",
-                filename="gawkr.apk"
+                filename="gawkr.apk",
+                headers={"X-Content-Type-Options": "nosniff"}
             )
     raise HTTPException(status_code=404, detail="Gawkr APK not found. Please build the Android package.")
 

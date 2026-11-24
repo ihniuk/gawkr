@@ -31,17 +31,63 @@ def authenticate_user(username: str, password: str) -> dict:
         return None
     return user
 
+def extract_client_ip(request: Optional[Request]) -> str:
+    """Extracts client IP prioritizing Cloudflare and reverse-proxy edge headers:
+    1. CF-Connecting-IP (Cloudflare canonical edge client IP)
+    2. True-Client-IP (Cloudflare Enterprise / Akamai client IP)
+    3. X-Real-IP (direct reverse proxy header)
+    4. X-Forwarded-For (rightmost trusted proxy in chain)
+    5. Direct socket client host fallback
+    """
+    if not request:
+        return "127.0.0.1"
+
+    # 1. Cloudflare canonical edge header
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip and cf_ip.strip():
+        candidate = cf_ip.split(",")[0].strip()
+        if candidate:
+            return candidate
+
+    # 2. True-Client-IP header
+    true_ip = request.headers.get("true-client-ip")
+    if true_ip and true_ip.strip():
+        candidate = true_ip.split(",")[0].strip()
+        if candidate:
+            return candidate
+
+    # 3. Direct real IP from reverse proxy
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        candidate = real_ip.split(",")[0].strip()
+        if candidate:
+            return candidate
+
+    # 4. Standard proxy forwarded header (take rightmost trusted proxy in chain)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+
+    # 5. Socket client host fallback
+    if getattr(request, "client", None) and request.client.host:
+        return request.client.host.strip()
+
+    return "127.0.0.1"
+
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = time.time() + (ACCESS_TOKEN_EXPIRE_MINUTES * 60)
-    to_encode.update({"exp": expire, "typ": "access"})
+    to_encode["exp"] = expire
+    to_encode["typ"] = "access"
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def decode_access_token(token: str) -> dict:
+def decode_access_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        # Enforce token type: only permit full access tokens on authenticated routes
-        if payload.get("typ") not in (None, "access"):
+        # Strictly enforce token type: reject any token where typ != "access"
+        if payload.get("typ") != "access":
             return None
         return payload
     except jwt.PyJWTError:
