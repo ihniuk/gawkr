@@ -5,6 +5,7 @@ import shutil
 import os
 import hashlib
 import uuid
+import ipaddress
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import cv2
@@ -15,7 +16,7 @@ from app.config import (
     DEFAULT_VIEWER_USER, DEFAULT_VIEWER_PASS
 )
 from app.models import (
-    CameraModel, CameraSettings, DetectionEvent, DetectionObject,
+    CameraModel, CameraSettings, DetectionEvent, DetectionObject, IncidentItem,
     SystemSettings, StorageConfig, AIVisionConfig, NotificationsConfig, AIMemoryConfig, AIMemoryItem
 )
 
@@ -71,6 +72,58 @@ def init_db():
     except Exception:
         pass
 
+    # Natural Language Full-Text Search (FTS5) Table for Events
+    try:
+        cursor.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+            event_id UNINDEXED,
+            camera_name,
+            objects_text,
+            ai_description,
+            threat_level
+        );
+        """)
+        # Populate FTS5 table from existing events if empty
+        cursor.execute("SELECT COUNT(*) FROM events_fts;")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("""
+            INSERT INTO events_fts (event_id, camera_name, objects_text, ai_description, threat_level)
+            SELECT id, camera_name, objects_json, COALESCE(ai_description, ''), COALESCE(threat_level, 'Safe')
+            FROM events;
+            """)
+        
+        # Triggers to keep events_fts synchronized
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS events_fts_insert AFTER INSERT ON events BEGIN
+            INSERT INTO events_fts (event_id, camera_name, objects_text, ai_description, threat_level)
+            VALUES (new.id, new.camera_name, new.objects_json, COALESCE(new.ai_description, ''), COALESCE(new.threat_level, 'Safe'));
+        END;
+        """)
+        cursor.execute("""
+        CREATE TRIGGER IF NOT EXISTS events_fts_delete AFTER DELETE ON events BEGIN
+            DELETE FROM events_fts WHERE event_id = old.id;
+        END;
+        """)
+    except Exception as e:
+        print(f"FTS5 initialization notice: {e}")
+
+    # Unified Multi-Camera Incidents Table (Feature 2)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS incidents (
+        id TEXT PRIMARY KEY,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        camera_sequence_json TEXT NOT NULL,
+        event_ids_json TEXT NOT NULL,
+        threat_level TEXT NOT NULL DEFAULT 'Safe',
+        preview_snapshots_json TEXT DEFAULT '[]',
+        created_at REAL NOT NULL
+    );
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_incidents_start ON incidents(start_time DESC);")
+
     # System Settings table (Key/Value store for Control Panel)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS system_settings (
@@ -85,9 +138,22 @@ def init_db():
         username TEXT PRIMARY KEY,
         password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'viewer',
-        created_at REAL NOT NULL
+        created_at REAL NOT NULL,
+        totp_secret TEXT DEFAULT NULL,
+        is_totp_enabled INTEGER DEFAULT 0,
+        backup_codes TEXT DEFAULT NULL
     );
     """)
+
+    # Ensure 2FA columns exist on existing users table
+    cursor.execute("PRAGMA table_info(users)")
+    existing_user_cols = [c[1] for c in cursor.fetchall()]
+    if "totp_secret" not in existing_user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN totp_secret TEXT DEFAULT NULL")
+    if "is_totp_enabled" not in existing_user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN is_totp_enabled INTEGER DEFAULT 0")
+    if "backup_codes" not in existing_user_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN backup_codes TEXT DEFAULT NULL")
 
     # Seed default users if table is empty
     cursor.execute("SELECT COUNT(*) FROM users;")
@@ -264,8 +330,212 @@ def update_event_ai_description(event_id: str, ai_description: str, threat_level
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("UPDATE events SET ai_description = ?, threat_level = ? WHERE id = ?", (ai_description, threat_level, event_id))
+    try:
+        cursor.execute("UPDATE events_fts SET ai_description = ?, threat_level = ? WHERE event_id = ?", (ai_description, threat_level, event_id))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
+
+def search_events_fts(
+    fts_query: str,
+    camera_id: Optional[str] = None,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    threat_level: Optional[str] = None,
+    limit: int = 50
+) -> List[DetectionEvent]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    params = []
+    
+    clean_fts = fts_query.strip() if fts_query else ""
+    if clean_fts:
+        sql = """
+        SELECT e.* 
+        FROM events e
+        JOIN events_fts f ON e.id = f.event_id
+        WHERE events_fts MATCH ?
+        """
+        params.append(clean_fts)
+    else:
+        sql = "SELECT e.* FROM events e WHERE 1=1"
+        
+    if camera_id:
+        sql += " AND e.camera_id = ?"
+        params.append(camera_id)
+    if start_time is not None:
+        sql += " AND e.timestamp >= ?"
+        params.append(start_time)
+    if end_time is not None:
+        sql += " AND e.timestamp <= ?"
+        params.append(end_time)
+    if threat_level and threat_level.upper() != "ALL":
+        sql += " AND LOWER(e.threat_level) = LOWER(?)"
+        params.append(threat_level)
+
+    if clean_fts:
+        sql += " ORDER BY rank, e.timestamp DESC LIMIT ?"
+    else:
+        sql += " ORDER BY e.timestamp DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+    except Exception:
+        # Fallback to standard LIKE search if FTS query syntax error
+        like_term = f"%{clean_fts.replace('*', '').strip()}%"
+        fallback_sql = """
+        SELECT * FROM events 
+        WHERE (ai_description LIKE ? OR camera_name LIKE ? OR objects_json LIKE ?)
+        """
+        f_params = [like_term, like_term, like_term]
+        if camera_id:
+            fallback_sql += " AND camera_id = ?"
+            f_params.append(camera_id)
+        if start_time is not None:
+            fallback_sql += " AND timestamp >= ?"
+            f_params.append(start_time)
+        if end_time is not None:
+            fallback_sql += " AND timestamp <= ?"
+            f_params.append(end_time)
+        fallback_sql += " ORDER BY timestamp DESC LIMIT ?"
+        f_params.append(limit)
+        cursor.execute(fallback_sql, tuple(f_params))
+        rows = cursor.fetchall()
+
+    conn.close()
+
+    events = []
+    for r in rows:
+        try:
+            objs_data = json.loads(r[4])
+            objs = [DetectionObject(**o) for o in objs_data]
+        except Exception:
+            objs = []
+        ai_desc = r[7] if len(r) > 7 else None
+        threat = r[8] if len(r) > 8 else "Safe"
+        clip_url = r[6] if len(r) > 6 else None
+        events.append(DetectionEvent(
+            id=r[0],
+            camera_id=r[1],
+            camera_name=r[2],
+            timestamp=r[3],
+            objects=objs,
+            snapshot_url=r[5],
+            video_clip_url=clip_url,
+            ai_description=ai_desc,
+            threat_level=threat
+        ))
+    return events
+
+# ----------------- MULTI-CAMERA INCIDENTS PERSISTENCE -----------------
+
+def save_incident_to_db(incident: IncidentItem):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    INSERT OR REPLACE INTO incidents (
+        id, start_time, end_time, title, summary,
+        camera_sequence_json, event_ids_json, threat_level,
+        preview_snapshots_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        incident.id,
+        incident.start_time,
+        incident.end_time,
+        incident.title,
+        incident.summary,
+        json.dumps(incident.camera_sequence),
+        json.dumps(incident.event_ids),
+        incident.threat_level,
+        json.dumps(incident.preview_snapshots),
+        incident.created_at
+    ))
+    conn.commit()
+    conn.close()
+
+def load_recent_incidents_from_db(limit: int = 50) -> List[IncidentItem]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, start_time, end_time, title, summary, camera_sequence_json, event_ids_json, threat_level, preview_snapshots_json, created_at
+    FROM incidents
+    ORDER BY start_time DESC
+    LIMIT ?
+    """, (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    incidents = []
+    for r in rows:
+        try:
+            cam_seq = json.loads(r[5])
+        except Exception:
+            cam_seq = []
+        try:
+            evt_ids = json.loads(r[6])
+        except Exception:
+            evt_ids = []
+        try:
+            snaps = json.loads(r[8]) if r[8] else []
+        except Exception:
+            snaps = []
+
+        incidents.append(IncidentItem(
+            id=r[0],
+            start_time=r[1],
+            end_time=r[2],
+            title=r[3],
+            summary=r[4],
+            camera_sequence=cam_seq,
+            event_ids=evt_ids,
+            threat_level=r[7] or "Safe",
+            preview_snapshots=snaps,
+            created_at=r[9]
+        ))
+    return incidents
+
+def get_incident_by_id(incident_id: str) -> Optional[IncidentItem]:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, start_time, end_time, title, summary, camera_sequence_json, event_ids_json, threat_level, preview_snapshots_json, created_at
+    FROM incidents WHERE id = ?
+    """, (incident_id,))
+    r = cursor.fetchone()
+    conn.close()
+    if not r:
+        return None
+    try:
+        cam_seq = json.loads(r[5])
+        evt_ids = json.loads(r[6])
+        snaps = json.loads(r[8]) if r[8] else []
+    except Exception:
+        cam_seq, evt_ids, snaps = [], [], []
+
+    return IncidentItem(
+        id=r[0],
+        start_time=r[1],
+        end_time=r[2],
+        title=r[3],
+        summary=r[4],
+        camera_sequence=cam_seq,
+        event_ids=evt_ids,
+        threat_level=r[7] or "Safe",
+        preview_snapshots=snaps,
+        created_at=r[9]
+    )
+
+def delete_incident_from_db(incident_id: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM incidents WHERE id = ?", (incident_id,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return deleted
 
 def delete_event_from_db(event_id: str):
     conn = sqlite3.connect(DB_PATH)
@@ -385,7 +655,7 @@ def get_system_settings() -> SystemSettings:
     return defaults
 
 def save_system_settings(settings: SystemSettings):
-    global _cached_sys_settings, _cached_sys_settings_time
+    global _cached_sys_settings, _cached_sys_settings_time, _cached_disk_stats
     
     # Auto-resolve and sanitize directories before saving
     settings.storage.recordings_dir = str(resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR))
@@ -393,6 +663,7 @@ def save_system_settings(settings: SystemSettings):
 
     _cached_sys_settings = settings
     _cached_sys_settings_time = time.time()
+    _cached_disk_stats = None
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute("""
@@ -402,8 +673,16 @@ def save_system_settings(settings: SystemSettings):
     conn.commit()
     conn.close()
 
-def get_storage_disk_stats() -> Dict[str, Any]:
-    """Calculates disk drive space and total recordings / snapshots directory byte usage."""
+_cached_disk_stats: Optional[Dict[str, Any]] = None
+_cached_disk_stats_time: float = 0.0
+
+def get_storage_disk_stats(force_refresh: bool = False) -> Dict[str, Any]:
+    """Calculates disk drive space and total recordings / snapshots directory byte usage with caching."""
+    global _cached_disk_stats, _cached_disk_stats_time
+    now = time.time()
+    if not force_refresh and _cached_disk_stats is not None and (now - _cached_disk_stats_time < 45.0):
+        return _cached_disk_stats
+
     settings = get_system_settings()
     rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR)
     snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR)
@@ -432,7 +711,7 @@ def get_storage_disk_stats() -> Dict[str, Any]:
     rec_count, rec_size = _dir_stats(rec_dir)
     snap_count, snap_size = _dir_stats(snap_dir)
 
-    return {
+    result = {
         "disk_total_gb": round(total_bytes / (1024**3), 1),
         "disk_used_gb": round(used_bytes / (1024**3), 1),
         "disk_free_gb": round(free_bytes / (1024**3), 1),
@@ -446,6 +725,9 @@ def get_storage_disk_stats() -> Dict[str, Any]:
         "retention_days": settings.storage.retention_days,
         "auto_purge_enabled": settings.storage.auto_purge_enabled
     }
+    _cached_disk_stats = result
+    _cached_disk_stats_time = now
+    return result
 
 def purge_expired_storage() -> Dict[str, int]:
     """
@@ -534,7 +816,7 @@ def purge_expired_storage() -> Dict[str, int]:
 def get_user_by_username(username: str) -> Optional[dict]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, password_hash, role, created_at FROM users WHERE username = ?", (username,))
+    cursor.execute("SELECT username, password_hash, role, created_at, totp_secret, is_totp_enabled, backup_codes FROM users WHERE username = ?", (username,))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -543,16 +825,54 @@ def get_user_by_username(username: str) -> Optional[dict]:
         "username": row[0],
         "password_hash": row[1],
         "role": row[2],
-        "created_at": row[3]
+        "created_at": row[3],
+        "totp_secret": row[4],
+        "is_totp_enabled": bool(row[5] == 1),
+        "backup_codes": row[6]
     }
 
 def list_all_users() -> List[dict]:
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT username, role, created_at FROM users ORDER BY created_at ASC")
+    cursor.execute("SELECT username, role, created_at, is_totp_enabled FROM users ORDER BY created_at ASC")
     rows = cursor.fetchall()
     conn.close()
-    return [{"username": r[0], "role": r[1], "created_at": r[2]} for r in rows]
+    return [{"username": r[0], "role": r[1], "created_at": r[2], "is_totp_enabled": bool(r[3] == 1)} for r in rows]
+
+def enable_user_totp(username: str, secret: str, backup_codes_json: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users 
+        SET totp_secret = ?, is_totp_enabled = 1, backup_codes = ?
+        WHERE username = ?
+    """, (secret, backup_codes_json, username))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+def disable_user_totp(username: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users 
+        SET totp_secret = NULL, is_totp_enabled = 0, backup_codes = NULL
+        WHERE username = ?
+    """, (username,))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+def update_user_backup_codes(username: str, backup_codes_json: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET backup_codes = ? WHERE username = ?", (backup_codes_json, username))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
 
 def create_user_in_db(username: str, password_hash: str, role: str) -> dict:
     conn = sqlite3.connect(DB_PATH)
@@ -654,9 +974,25 @@ def clear_login_audit_logs():
 
 # ----------------- BRUTE-FORCE DEFENSE & BLOCKED IPS -----------------
 
+def is_trusted_or_local_ip(ip: str) -> bool:
+    """Returns True if the IP is a local loopback, Docker bridge gateway, or internal container network."""
+    if not ip or ip in ("127.0.0.1", "::1", "localhost"):
+        return True
+    try:
+        addr = ipaddress.ip_address(ip)
+        if addr.is_loopback:
+            return True
+        # Docker default bridge subnets (172.16.0.0/12, which includes 172.17.x - 172.31.x, e.g. 172.29.0.1)
+        # where Docker proxy SNATs all incoming host/LAN connections:
+        if addr in ipaddress.ip_network("172.16.0.0/12"):
+            return True
+    except ValueError:
+        pass
+    return False
+
 def is_ip_blocked(ip: str) -> bool:
     """Checks whether an IP address is actively blocked from authentication."""
-    if not ip:
+    if is_trusted_or_local_ip(ip):
         return False
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -665,13 +1001,14 @@ def is_ip_blocked(ip: str) -> bool:
     conn.close()
     return bool(row and row[0] == 1)
 
-def record_login_failure(ip: str, max_failures: int = 2) -> bool:
+def record_login_failure(ip: str, max_failures: int = 5) -> bool:
     """
     Increments failure count for the IP.
-    If failures >= max_failures (2), locks the IP and marks is_blocked = 1.
+    If failures >= max_failures (default 5), locks the IP and marks is_blocked = 1.
     Returns True if the IP is now blocked.
+    Trusted/internal Docker bridge and loopback IPs are never blocked.
     """
-    if not ip:
+    if is_trusted_or_local_ip(ip):
         return False
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()

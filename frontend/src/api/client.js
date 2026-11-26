@@ -121,9 +121,50 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ username, password })
     });
+    if (res.require_2fa) {
+      return res;
+    }
     authStorage.setToken(res.token);
     authStorage.setUser({ username: res.username, role: res.role });
     return res;
+  },
+
+  async verify2faLogin(challengeToken, code) {
+    const res = await apiFetch('/auth/2fa/verify-login', {
+      method: 'POST',
+      body: JSON.stringify({ challenge_token: challengeToken, code })
+    });
+    authStorage.setToken(res.token);
+    authStorage.setUser({ username: res.username, role: res.role });
+    return res;
+  },
+
+  async get2faStatus() {
+    return apiFetch('/auth/2fa/status');
+  },
+
+  async setup2fa() {
+    return apiFetch('/auth/2fa/setup', { method: 'POST' });
+  },
+
+  async enable2fa(secret, code) {
+    return apiFetch('/auth/2fa/enable', {
+      method: 'POST',
+      body: JSON.stringify({ secret, code })
+    });
+  },
+
+  async disable2fa(password) {
+    return apiFetch('/auth/2fa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password })
+    });
+  },
+
+  async adminReset2fa(username) {
+    return apiFetch(`/users/${username}/reset-2fa`, {
+      method: 'PUT'
+    });
   },
 
   async changePassword(username, currentPassword, newPassword) {
@@ -249,6 +290,10 @@ export const api = {
     return URL.createObjectURL(blob);
   },
 
+  async saveCameraSnapshot(id) {
+    return apiFetch(`/cameras/${id}/snapshot`, { method: 'POST' });
+  },
+
   // Discovery
   async scanNetwork() {
     return apiFetch('/discovery/scan', { method: 'POST' });
@@ -284,6 +329,44 @@ export const api = {
     });
   },
 
+  // Natural Language Search (Feature 1)
+  async searchEvents(query, limit = 50) {
+    const params = new URLSearchParams({ q: query, limit });
+    return apiFetch(`/search/events?${params.toString()}`);
+  },
+
+  // Multi-Camera Incidents (Feature 2)
+  async getIncidents(limit = 50) {
+    return apiFetch(`/incidents?limit=${limit}`);
+  },
+
+  async getIncident(id) {
+    return apiFetch(`/incidents/${id}`);
+  },
+
+  async correlateIncidents() {
+    return apiFetch('/incidents/correlate', {
+      method: 'POST'
+    });
+  },
+
+  async deleteIncident(id) {
+    return apiFetch(`/incidents/${id}`, {
+      method: 'DELETE'
+    });
+  },
+
+  // Active Perimeter Deterrence (Feature 5)
+  async testDeterrenceTrigger(cameraName = 'Perimeter Sentry Test') {
+    return apiFetch(`/deterrence/test?camera_name=${encodeURIComponent(cameraName)}`, {
+      method: 'POST'
+    });
+  },
+
+  async getDeterrenceStatus() {
+    return apiFetch('/deterrence/status');
+  },
+
   // System Settings & Control Panel
   async getSettings() {
     return apiFetch('/settings');
@@ -310,6 +393,16 @@ export const api = {
     return apiFetch('/settings/test-ai-vision', {
       method: 'POST',
       body: JSON.stringify(config)
+    });
+  },
+
+  async getAiVisionStatus() {
+    return apiFetch('/settings/ai-vision/status');
+  },
+
+  async healAiVision() {
+    return apiFetch('/settings/ai-vision/heal', {
+      method: 'POST'
     });
   },
 

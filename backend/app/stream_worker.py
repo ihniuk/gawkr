@@ -17,6 +17,14 @@ from app.models import CameraModel, StreamTelemetry, DetectionEvent, DetectionOb
 from app.inference import inference_engine
 from app.storage import save_snapshot_image, save_event_to_db, update_event_video_clip
 from app.hardware import detect_hardware_capabilities, get_ffmpeg_encode_args
+from app.logger import logger
+
+def _mask_rtsp_url(url: str) -> str:
+    """Masks credentials in RTSP URL for secure logging."""
+    if not url:
+        return ""
+    import re
+    return re.sub(r'://([^:]+):([^@]+)@', r'://\1:****@', url)
 
 class CameraStreamWorker:
     def __init__(self, camera: CameraModel, notification_callback=None):
@@ -238,12 +246,14 @@ class CameraStreamWorker:
             def _run_ai_vision():
                 if sys_settings.ai_vision.enabled:
                     try:
+                        detected_labels = [getattr(o, 'label', str(o)) for o in (evt.objects or [])]
                         ai_res = analyze_snapshot_with_ai(
                             snap_frame,
                             sys_settings.ai_vision,
                             last_description=self.last_ai_description,
                             stationary_objects_note=stationary_note,
-                            memory_config=sys_settings.ai_memory
+                            memory_config=sys_settings.ai_memory,
+                            detected_objects=detected_labels
                         )
                         evt.ai_description = ai_res.get("description")
                         evt.threat_level = ai_res.get("threat_level", "Safe")
@@ -319,8 +329,10 @@ class CameraStreamWorker:
                 h = (h // 2) * 2
 
                 out_filename = f"{self.camera.id}_{event_id}.mp4"
-                out_path = RECORDINGS_DIR / out_filename
-                temp_out_path = RECORDINGS_DIR / f"tmp_{out_filename}"
+                from app.storage import resolve_storage_dir, get_system_settings
+                rec_dir = resolve_storage_dir(get_system_settings().storage.recordings_dir, RECORDINGS_DIR)
+                out_path = rec_dir / out_filename
+                temp_out_path = rec_dir / f"tmp_{out_filename}"
 
                 # Retrieve configured hardware backend and encoding parameters
                 hw_backend = getattr(cam_settings, 'hw_accel_backend', 'auto') if cam_settings else 'auto'
@@ -342,7 +354,12 @@ class CameraStreamWorker:
                     str(temp_out_path)
                 ]
 
-                proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE
+                )
 
                 # 1. Feed pre-roll buffer frames immediately into encoder
                 total_written = 0
@@ -375,7 +392,7 @@ class CameraStreamWorker:
                             proc.stdin.write(frame_to_write.tobytes())
                             total_written += 1
                         except (BrokenPipeError, IOError):
-                            print(f"FFmpeg stdin broken during event recording for {self.camera.name}")
+                            logger.warning(f"FFmpeg stdin broken during event recording for {self.camera.name}", component="recording")
                             break
 
                     # Check for active detections (persons or moving triggers)
@@ -390,7 +407,7 @@ class CameraStreamWorker:
 
                     # Hard maximum recording limit reached (e.g. 5 minutes)
                     if elapsed >= max_rec:
-                        print(f"Event clip for {self.camera.name} reached max duration ({max_rec}s, {total_written} frames)")
+                        logger.info(f"Event clip for {self.camera.name} reached max duration ({max_rec}s, {total_written} frames)", component="recording")
                         break
 
                     # Minimum clip length guarantee
@@ -405,31 +422,61 @@ class CameraStreamWorker:
 
                     # Scene clear check: stop once no people or motion for post_roll seconds
                     if (now - last_active_time) >= post_roll:
-                        print(f"Scene clear for {post_roll}s on {self.camera.name}. Concluding event recording ({elapsed:.1f}s, {total_written} frames)")
+                        logger.info(f"Scene clear for {post_roll}s on {self.camera.name}. Concluding event recording ({elapsed:.1f}s, {total_written} frames)", component="recording")
                         break
 
                 # Finish encoding
+                stderr_text = ""
                 try:
-                    proc.stdin.close()
-                except Exception:
-                    pass
-                proc.wait()
+                    if proc.stdin and not proc.stdin.closed:
+                        proc.stdin.close()
+                    proc.wait(timeout=15)
+                    if proc.stderr:
+                        err_bytes = proc.stderr.read()
+                        if err_bytes:
+                            stderr_text = err_bytes.decode('utf-8', errors='ignore')
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    stderr_text = "FFmpeg encoding timed out after 15s"
+                except Exception as e:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    stderr_text = f"FFmpeg wait error: {e}"
+                finally:
+                    if proc.stderr:
+                        try:
+                            proc.stderr.close()
+                        except Exception:
+                            pass
 
+                video_url = None
                 # Atomically promote temporary file to final output path
-                if temp_out_path.exists() and temp_out_path.stat().st_size > 1024:
+                if proc.returncode == 0 and temp_out_path.exists() and temp_out_path.stat().st_size > 1024:
                     try:
                         if out_path.exists():
                             out_path.unlink()
                         temp_out_path.replace(out_path)
-                    except Exception:
-                        pass
-                    print(f"Recorded dynamic event clip successfully: {out_filename} ({total_written} frames @ {clip_fps} FPS)")
+                        video_url = f"/api/recordings/{out_filename}"
+                        logger.info(f"Recorded event clip successfully: {out_filename} ({total_written} frames @ {clip_fps} FPS)", component="recording")
+                    except Exception as promote_err:
+                        logger.error(f"Failed to promote clip {out_filename}: {promote_err}", component="recording")
                 else:
-                    print(f"Warning: Failed to produce valid recording clip {out_filename}")
+                    logger.error(
+                        f"Failed to produce valid recording clip {out_filename} (exit code: {proc.returncode})",
+                        component="recording",
+                        details=stderr_text[:400] if stderr_text else "Output clip missing or under 1KB"
+                    )
+                    if temp_out_path.exists():
+                        try: temp_out_path.unlink()
+                        except Exception: pass
 
-                # Update DB and notify
-                video_url = f"/api/recordings/{out_filename}"
-                update_event_video_clip(event_id, video_url)
+                # Update DB and notify if valid clip was created (clear if failed)
+                if video_url:
+                    update_event_video_clip(event_id, video_url)
+                else:
+                    update_event_video_clip(event_id, None)
 
                 if self.notification_callback:
                     # Send updated event notification
@@ -479,6 +526,12 @@ class CameraStreamWorker:
         )
         save_event_to_db(event)
         
+        try:
+            from app.incident_correlator import ingest_event_into_incidents
+            ingest_event_into_incidents(event)
+        except Exception:
+            pass
+
         if self.notification_callback:
             self.notification_callback(event)
             
@@ -501,10 +554,31 @@ class CameraStreamWorker:
         cap = None
         consecutive_errors = 0
         last_success_time = time.time()
+        last_error_log_time = 0.0
+        was_online: Optional[bool] = None
         
         while self.is_running:
             if cap is None or not cap.isOpened():
+                now = time.time()
                 self.camera.is_online = False
+                self.camera.error = "Connection failed: unable to open RTSP stream"
+                if was_online is not False or (now - last_error_log_time >= 30.0):
+                    last_error_log_time = now
+                    details = f"RTSP URL: {_mask_rtsp_url(stream_url)}"
+                    if was_online is False and (now - last_success_time > 30.0):
+                        logger.critical(
+                            f"Camera '{self.camera.name}' ({self.camera.ip}) feed OFFLINE: stream connection unreachable",
+                            component="stream",
+                            details=details
+                        )
+                    else:
+                        logger.error(
+                            f"Camera '{self.camera.name}' ({self.camera.ip}) feed connection failed: unable to open stream",
+                            component="stream",
+                            details=details
+                        )
+                    was_online = False
+
                 try:
                     if cap:
                         cap.release()
@@ -514,7 +588,6 @@ class CameraStreamWorker:
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 time.sleep(1.0)
                 consecutive_errors = 0
-                last_success_time = time.time()
                 continue
                 
             ret, frame = cap.read()
@@ -525,12 +598,28 @@ class CameraStreamWorker:
                 # If reading fails continuously for > 2 seconds or 20 frames, force a clean socket reconnect
                 if consecutive_errors > 20 or (now - last_success_time > 2.5):
                     self.camera.is_online = False
+                    self.camera.error = "Stream read timeout: no video frames received"
+                    if now - last_error_log_time >= 30.0:
+                        last_error_log_time = now
+                        if consecutive_errors > 60 or (now - last_success_time > 30.0):
+                            logger.critical(
+                                f"Camera '{self.camera.name}' ({self.camera.ip}) feed OFFLINE: stream disconnected for over 30s",
+                                component="stream",
+                                details=f"Dropped frames: {self.dropped_frames}"
+                            )
+                        else:
+                            logger.error(
+                                f"Camera '{self.camera.name}' ({self.camera.ip}) feed frame loss: packet timeout",
+                                component="stream",
+                                details=f"Consecutive errors: {consecutive_errors}"
+                            )
                     try:
                         cap.release()
                     except Exception:
                         pass
                     cap = None
                     consecutive_errors = 0
+                    was_online = False
                     time.sleep(0.5)
                 else:
                     time.sleep(0.02)
@@ -539,6 +628,16 @@ class CameraStreamWorker:
             consecutive_errors = 0
             last_success_time = now
             self.camera.is_online = True
+            self.camera.error = None
+            if was_online is False or was_online is None:
+                logger.info(
+                    f"Camera '{self.camera.name}' feed restored and online ({frame.shape[1]}x{frame.shape[0]})",
+                    component="stream",
+                    details=f"Camera ID: {self.camera.id}"
+                )
+                was_online = True
+            self.camera.is_online = True
+            self.camera.error = None
             
             with self.raw_frame_lock:
                 self.raw_frame = frame
@@ -723,6 +822,18 @@ class CameraStreamWorker:
             evaluated_detections = self._evaluate_vehicle_motion(alert_detections, loop_start)
             self.latest_detections = evaluated_detections
 
+            # Active Deterrence loiter & perimeter dwell evaluation
+            try:
+                from app.deterrence import active_deterrence_manager
+                active_deterrence_manager.evaluate_dwell(
+                    self.camera.id,
+                    self.camera.name,
+                    [d.label for d in evaluated_detections],
+                    loop_start
+                )
+            except Exception:
+                pass
+
             active_trigger_detections = [
                 d for d in evaluated_detections
                 if not (getattr(d, 'is_stationary', False) and not getattr(d, 'has_moved', True))
@@ -775,6 +886,12 @@ class CameraStreamWorker:
                 )
                 save_event_to_db(event)
                 
+                try:
+                    from app.incident_correlator import ingest_event_into_incidents
+                    ingest_event_into_incidents(event)
+                except Exception:
+                    pass
+
                 if self.notification_callback:
                     self.notification_callback(event)
                     

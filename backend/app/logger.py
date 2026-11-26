@@ -29,8 +29,11 @@ def init_log_db():
     conn.commit()
     conn.close()
 
+_log_write_counter = 0
+
 def log_event(level: str, component: str, message: str, details: Optional[str] = None):
     """Logs an event to in-memory buffer and SQLite."""
+    global _log_write_counter
     now = time.time()
     level_normalized = level.upper()
     entry = {
@@ -49,6 +52,16 @@ def log_event(level: str, component: str, message: str, details: Optional[str] =
         INSERT INTO system_logs (timestamp, level, component, message, details)
         VALUES (?, ?, ?, ?, ?)
         """, (now, level_normalized, component, str(message), details or ""))
+        
+        # Periodic auto-prune to prevent runaway log table growth (keep newest 5,000 logs)
+        _log_write_counter += 1
+        if _log_write_counter >= 500:
+            _log_write_counter = 0
+            cursor.execute("""
+            DELETE FROM system_logs WHERE id NOT IN (
+                SELECT id FROM system_logs ORDER BY timestamp DESC LIMIT 5000
+            )
+            """)
         conn.commit()
         conn.close()
     except Exception as e:
@@ -60,6 +73,9 @@ class BufferLogHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = self.format(record)
+            # Filter out routine uvicorn access noise and unauthenticated websocket polling rejections
+            if "connection rejected" in msg or "WebSocket /api/ws/events" in msg or "/api/system/logs" in msg:
+                return
             level = record.levelname
             component = record.name
             log_event(level, component, msg)
@@ -73,12 +89,12 @@ def setup_app_logging():
     formatter = logging.Formatter('%(message)s')
     handler.setFormatter(formatter)
     
-    # Attach to root and uvicorn
+    # Attach to root and application loggers (exclude uvicorn.access to prevent DB flood)
     root_logger = logging.getLogger()
     if handler not in root_logger.handlers:
         root_logger.addHandler(handler)
 
-    for name in ["uvicorn", "uvicorn.error", "uvicorn.access", "fastapi", "gawkr"]:
+    for name in ["uvicorn", "uvicorn.error", "fastapi", "gawkr"]:
         l = logging.getLogger(name)
         l.setLevel(logging.INFO)
         if handler not in l.handlers:
@@ -154,6 +170,11 @@ class GawkrLogger:
     def error(msg: str, component: str = "system", details: Optional[str] = None):
         log_event("ERROR", component, msg, details)
         print(f"[{component.upper()}] ERROR: {msg}")
+
+    @staticmethod
+    def critical(msg: str, component: str = "system", details: Optional[str] = None):
+        log_event("CRITICAL", component, msg, details)
+        print(f"[{component.upper()}] CRITICAL: {msg}")
 
     @staticmethod
     def debug(msg: str, component: str = "system", details: Optional[str] = None):

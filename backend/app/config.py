@@ -48,3 +48,22 @@ DEFAULT_VIEWER_PASS = "viewer123"
 DEFAULT_CONFIDENCE_THRESHOLD = 0.75
 DEFAULT_CLASSES = ["person", "car", "motorcycle", "bus", "truck", "dog", "cat", "bicycle"]
 INFERENCE_TARGET_FPS = 8
+
+# Allowed CORS Origins
+DEFAULT_CORS_ORIGINS = [
+    "https://cams.ihni.uk",
+    "http://cams.ihni.uk",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+def resolve_cors_origins() -> list[str]:
+    raw = os.getenv("GAWKR_CORS_ORIGINS") or os.getenv("CORS_ORIGINS")
+    if raw:
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        if origins:
+            return origins
+    return DEFAULT_CORS_ORIGINS
+

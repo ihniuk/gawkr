@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import json
+import re
 import time
 import uuid
 from typing import Optional, List, Dict, Any
@@ -10,10 +12,13 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, WebSocket, W
 from fastapi.responses import StreamingResponse, Response, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR
+import app.storage as storage
+from app.config import SNAPSHOTS_DIR, RECORDINGS_DIR, resolve_cors_origins
 from app.models import (
     UserLogin, UserResponse, UserCreate, UserPasswordReset, UserPasswordChange, UserRoleUpdate, UserItem,
+    TOTPSetupResponse, TOTPEnableRequest, TOTPEnableResponse, TOTPDisableRequest, TwoFactorLoginRequest,
     CameraModel, CameraCreate, CameraUpdate,
     CredentialVerifyRequest, CredentialVerifyResponse, SystemSettings, AIVisionConfig,
     AIMemoryConfig, AIMemoryItem,
@@ -21,8 +26,11 @@ from app.models import (
 )
 from app.auth import (
     authenticate_user, create_access_token, decode_access_token, get_current_user, require_admin,
-    verify_ha_integration_auth,
+    verify_ha_integration_auth, hash_password, extract_client_ip,
     create_stream_ticket, verify_stream_ticket,
+    create_2fa_challenge_token, verify_2fa_challenge_token,
+    generate_totp_secret, generate_totp_qr_data_url, verify_totp_code,
+    generate_backup_codes, verify_and_consume_backup_code,
     list_users, add_new_user, reset_user_password, update_user_role, delete_user
 )
 from app.discovery import discover_network_cameras, verify_camera_credentials, _test_rtsp_stream_cv2
@@ -58,6 +66,14 @@ async def lifespan(app: FastAPI):
             mqtt_service.sync_all_cameras(camera_manager.get_all(), startup_settings.notifications.mqtt)
     except Exception as e:
         logger.warning(f"Initial Home Assistant MQTT sync skipped: {e}", component="system")
+
+    # Pre-warm disk stats and hardware capabilities caches in background for instant UI response
+    from app.storage import get_storage_disk_stats
+    from app.hardware import detect_hardware_capabilities
+    from app.incident_correlator import backfill_all_incidents
+    asyncio.create_task(asyncio.to_thread(get_storage_disk_stats))
+    asyncio.create_task(asyncio.to_thread(detect_hardware_capabilities))
+    asyncio.create_task(asyncio.to_thread(backfill_all_incidents))
     
     # Background task for periodic telemetry broadcast & Home Assistant MQTT snapshot push
     last_mqtt_snap_push = 0.0
@@ -102,47 +118,76 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error(f"Storage retention worker error: {e}", component="storage")
             await asyncio.sleep(1800) # Check every 30 minutes
+
+    async def ai_vision_health_loop():
+        from app.ai_vision import probe_and_heal_ollama
+        was_online = None
+        while True:
+            try:
+                settings = get_system_settings()
+                if settings.ai_vision.enabled and settings.ai_vision.provider == "ollama":
+                    status = await asyncio.to_thread(probe_and_heal_ollama, settings.ai_vision, False)
+                    is_online = status.get("success", False)
+                    if was_online is False and is_online:
+                        logger.info(
+                            f"AI Vision Self-Heal: Local Ollama link recovered at {status.get('endpoint')} using model '{status.get('active_model')}'",
+                            component="ai_vision"
+                        )
+                    elif was_online is True and not is_online:
+                        logger.warning(
+                            "AI Vision Alert: Local Ollama service is unreachable. Automatic neural failover active.",
+                            component="ai_vision"
+                        )
+                    was_online = is_online
+            except Exception as e:
+                logger.error(f"AI Vision health check error: {e}", component="ai_vision")
+            await asyncio.sleep(45)
     
     task = asyncio.create_task(telemetry_loop())
     storage_task = asyncio.create_task(storage_retention_loop())
+    ai_vision_task = asyncio.create_task(ai_vision_health_loop())
     yield
     # Shutdown
     logger.info("Gawkr AI-NVR Server shutting down...", component="system")
     task.cancel()
     storage_task.cancel()
+    ai_vision_task.cancel()
     mqtt_service.shutdown()
     camera_manager.shutdown()
 
 app = FastAPI(title="Gawkr AI-NVR Server", version="1.0.0", lifespan=lifespan)
 
-# Allow CORS for local dev servers and reverse proxies
+# Lightweight Starlette middleware to inject X-Content-Type-Options, X-Frame-Options, Referrer-Policy, and HSTS
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Tightened CORS restricted from * to configured hostnames (e.g. https://cams.ihni.uk) & local origins
+cors_origins = resolve_cors_origins()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
+    allow_origins=cors_origins,
+    allow_origin_regex=r"^https?://(cams\.ihni\.uk|localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ----------------- AUTHENTICATION -----------------
 
-def extract_client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
-    if request.client:
-        return request.client.host
-    return "127.0.0.1"
-
 @app.post("/api/auth/login", response_model=UserResponse)
 async def login(credentials: UserLogin, request: Request):
     client_ip = extract_client_ip(request)
     user_agent = request.headers.get("user-agent", "Unknown")
 
-    # 1. Enforce automatic brute-force lockout (blocks after 2 failed logins)
+    # 1. Enforce automatic brute-force lockout (blocks external IPs after 5 failed logins)
     if is_ip_blocked(client_ip):
         record_login_audit(credentials.username, client_ip, user_agent, "BLOCKED", "IP blocked due to repeated failed logins")
         logger.warning(f"Rejected login attempt from blocked IP {client_ip} for username '{credentials.username}'", component="auth")
@@ -153,22 +198,34 @@ async def login(credentials: UserLogin, request: Request):
 
     user = authenticate_user(credentials.username, credentials.password)
     if not user:
-        now_blocked = record_login_failure(client_ip, max_failures=2)
-        reason = "Incorrect username or password" + (" (IP blocked after 2 failures)" if now_blocked else " (Attempt 1 of 2)")
+        now_blocked = record_login_failure(client_ip, max_failures=5)
+        reason = "Incorrect username or password" + (" (IP blocked after 5 failures)" if now_blocked else "")
         status_label = "BLOCKED" if now_blocked else "FAILED"
         record_login_audit(credentials.username, client_ip, user_agent, status_label, reason)
         logger.warning(f"Failed login attempt for '{credentials.username}' from {client_ip} (blocked={now_blocked})", component="auth")
         if now_blocked:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 2 failed login attempts. An administrator can unblock it from the Control Panel."
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 5 failed login attempts. An administrator can unblock it from the Control Panel."
             )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password. Warning: 2 failed attempts will automatically block this IP address."
+            detail="Incorrect username or password. Please verify your credentials and try again."
         )
 
-    # 2. On successful authentication, reset failed attempts counter
+    # 2. Check if user has Two-Factor Authentication enabled
+    if user.get("is_totp_enabled"):
+        challenge_token = create_2fa_challenge_token(user["username"], user["role"])
+        logger.info(f"Two-factor challenge issued for user '{credentials.username}' from {client_ip}", component="auth")
+        return UserResponse(
+            username=user["username"],
+            role=user["role"],
+            token=None,
+            require_2fa=True,
+            challenge_token=challenge_token
+        )
+
+    # 3. On successful single-factor authentication, reset failed attempts counter
     reset_ip_failures(client_ip)
     record_login_audit(credentials.username, client_ip, user_agent, "SUCCESS")
     logger.info(f"Successful login for user '{credentials.username}' from {client_ip}", component="auth")
@@ -176,8 +233,136 @@ async def login(credentials: UserLogin, request: Request):
     return UserResponse(
         username=user["username"],
         role=user["role"],
-        token=token
+        token=token,
+        require_2fa=False
     )
+
+@app.post("/api/auth/2fa/verify-login", response_model=UserResponse)
+async def verify_two_factor_login(payload: TwoFactorLoginRequest, request: Request):
+    """Completes login authentication by verifying a 6-digit TOTP code or emergency backup code."""
+    client_ip = extract_client_ip(request)
+    user_agent = request.headers.get("user-agent", "Unknown")
+
+    if is_ip_blocked(client_ip):
+        record_login_audit("unknown", client_ip, user_agent, "BLOCKED", "IP blocked due to repeated failed logins")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access Denied: Your IP address ({client_ip}) is currently blocked."
+        )
+
+    challenge_data = verify_2fa_challenge_token(payload.challenge_token)
+    if not challenge_data:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Two-factor session has expired or is invalid. Please sign in again."
+        )
+
+    username = challenge_data.get("sub")
+    user = storage.get_user_by_username(username)
+    if not user or not user.get("is_totp_enabled"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Two-factor authentication is not active for this account."
+        )
+
+    code = payload.code.strip()
+    is_valid_totp = verify_totp_code(user.get("totp_secret", ""), code)
+    is_valid_backup = False if is_valid_totp else verify_and_consume_backup_code(username, code)
+
+    if not is_valid_totp and not is_valid_backup:
+        now_blocked = record_login_failure(client_ip, max_failures=5)
+        status_label = "BLOCKED" if now_blocked else "FAILED"
+        reason = "Incorrect 2FA authenticator code" + (" (IP blocked after 5 failures)" if now_blocked else "")
+        record_login_audit(username, client_ip, user_agent, status_label, reason)
+        logger.warning(f"Failed 2FA code attempt for '{username}' from {client_ip} (blocked={now_blocked})", component="auth")
+        if now_blocked:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Security Alert: Your IP address ({client_ip}) has been blocked after 5 failed verification attempts."
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication code. Please check your authenticator app and try again."
+        )
+
+    # 2FA Success!
+    reset_ip_failures(client_ip)
+    success_reason = "2FA TOTP Verified" if is_valid_totp else "2FA Backup Code Verified"
+    record_login_audit(username, client_ip, user_agent, "SUCCESS", success_reason)
+    logger.info(f"Successful 2FA authentication for user '{username}' from {client_ip} ({success_reason})", component="auth")
+    token = create_access_token({"sub": user["username"], "role": user["role"]})
+    return UserResponse(
+        username=user["username"],
+        role=user["role"],
+        token=token,
+        require_2fa=False
+    )
+
+@app.get("/api/auth/2fa/status")
+async def get_two_factor_status(user: dict = Depends(get_current_user)):
+    """Returns 2FA status and remaining backup recovery codes count."""
+    user_data = storage.get_user_by_username(user["username"])
+    if not user_data:
+        raise HTTPException(status_code=404, detail="User not found")
+    backup_codes_left = 0
+    if user_data.get("backup_codes"):
+        try:
+            backup_codes_left = len(json.loads(user_data["backup_codes"]))
+        except Exception:
+            backup_codes_left = 0
+    return {
+        "username": user["username"],
+        "is_totp_enabled": user_data.get("is_totp_enabled", False),
+        "backup_codes_count": backup_codes_left
+    }
+
+@app.post("/api/auth/2fa/setup", response_model=TOTPSetupResponse)
+async def setup_two_factor(user: dict = Depends(get_current_user)):
+    """Generates a new TOTP secret and QR code for scanning in an authenticator app."""
+    secret = generate_totp_secret()
+    otpauth_url, qr_data_url = generate_totp_qr_data_url(user["username"], secret, issuer_name="Gawkr NVR")
+    return TOTPSetupResponse(
+        secret=secret,
+        qr_code_data_url=qr_data_url,
+        otpauth_url=otpauth_url
+    )
+
+@app.post("/api/auth/2fa/enable", response_model=TOTPEnableResponse)
+async def enable_two_factor(payload: TOTPEnableRequest, user: dict = Depends(get_current_user)):
+    """Confirms initial 6-digit code pairing and enables 2FA with emergency backup recovery codes."""
+    if not verify_totp_code(payload.secret, payload.code):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid 6-digit verification code. Please confirm the time on your authenticator device and try again."
+        )
+    plain_codes, hashed_codes = generate_backup_codes(count=8)
+    storage.enable_user_totp(user["username"], payload.secret, json.dumps(hashed_codes))
+    logger.info(f"Two-factor authentication enabled for user '{user['username']}'", component="auth")
+    return TOTPEnableResponse(
+        status="success",
+        message="Two-Factor Authentication is now actively protecting your account.",
+        backup_codes=plain_codes
+    )
+
+@app.post("/api/auth/2fa/disable")
+async def disable_two_factor(payload: TOTPDisableRequest, user: dict = Depends(get_current_user)):
+    """Disables 2FA after password confirmation."""
+    user_data = storage.get_user_by_username(user["username"])
+    if not user_data or user_data["password_hash"] != hash_password(payload.password):
+        raise HTTPException(status_code=401, detail="Incorrect password. 2FA cannot be disabled.")
+    storage.disable_user_totp(user["username"])
+    logger.info(f"Two-factor authentication disabled by user '{user['username']}'", component="auth")
+    return {"status": "disabled", "message": "Two-factor authentication has been disabled."}
+
+@app.put("/api/users/{username}/reset-2fa")
+async def admin_reset_two_factor(username: str, user: dict = Depends(require_admin)):
+    """Administrator emergency override to reset 2FA for a locked-out user."""
+    target_user = storage.get_user_by_username(username)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    storage.disable_user_totp(username)
+    logger.warning(f"Admin '{user['username']}' reset 2FA for user '{username}'", component="auth")
+    return {"status": "reset", "message": f"2FA has been disabled for user '{username}'."}
 
 @app.post("/api/auth/change-password")
 async def self_service_change_password(payload: UserPasswordChange):
@@ -363,26 +548,120 @@ async def capture_snapshot(camera_id: str, user: dict = Depends(get_current_user
         raise HTTPException(status_code=500, detail="Failed to capture snapshot frame")
     return Response(content=jpeg, media_type="image/jpeg")
 
-@app.get("/api/snapshots/{filename}")
+@app.post("/api/cameras/{camera_id}/snapshot")
+async def save_manual_camera_snapshot(camera_id: str, user: dict = Depends(get_current_user)):
+    """Captures a pristine frame, saves to storage, and logs as a viewable event in timeline."""
+    worker = camera_manager.get_worker(camera_id)
+    if not worker:
+        raise HTTPException(status_code=404, detail="Camera not found or inactive")
+    with worker.frame_lock:
+        frame = worker.latest_frame.copy() if worker.latest_frame is not None else None
+    if frame is None:
+        raise HTTPException(status_code=503, detail="Camera feed inactive or no frames received yet")
+
+    from app.storage import save_snapshot_image, save_event_to_db
+    from app.models import DetectionEvent, DetectionObject
+    event_id = str(uuid.uuid4())[:8]
+    snap_url = save_snapshot_image(camera_id, frame, event_id)
+    evt = DetectionEvent(
+        id=event_id,
+        camera_id=camera_id,
+        camera_name=worker.camera.name,
+        timestamp=time.time(),
+        objects=[DetectionObject(label="snapshot", confidence=1.0, box=[0.0, 0.0, 0.0, 0.0])],
+        snapshot_url=snap_url,
+        video_clip_url=None,
+        ai_description=f"Manual high-resolution snapshot captured from {worker.camera.name}.",
+        threat_level="Safe"
+    )
+    save_event_to_db(evt)
+    if worker.notification_callback:
+        worker.notification_callback(evt)
+    return {"status": "captured", "snapshot_url": snap_url, "event": evt.model_dump()}
+
+ALLOWED_SNAPSHOT_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+ALLOWED_RECORDING_EXTS = {".mp4", ".mkv", ".ts"}
+
+@app.api_route("/api/snapshots/{filename}", methods=["GET", "HEAD"])
 async def get_snapshot_file(filename: str):
+    """Serves snapshot images with HTTP GET and HEAD support, path traversal defense, and format restriction."""
     clean_name = Path(filename).name
     if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid snapshot filename")
-    file_path = (SNAPSHOTS_DIR / clean_name).resolve()
-    if not file_path.is_relative_to(SNAPSHOTS_DIR.resolve()) or not file_path.is_file():
-        raise HTTPException(status_code=404, detail="Snapshot not found")
-    return FileResponse(str(file_path), media_type="image/jpeg")
+    
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", clean_name):
+        raise HTTPException(status_code=400, detail="Invalid characters in snapshot filename")
+        
+    ext = Path(clean_name).suffix.lower()
+    if ext not in ALLOWED_SNAPSHOT_EXTS:
+        raise HTTPException(status_code=400, detail=f"Disallowed snapshot file format: {ext}")
+    
+    from app.storage import resolve_storage_dir
+    settings = get_system_settings()
+    snap_dir = resolve_storage_dir(settings.storage.snapshots_dir, SNAPSHOTS_DIR).resolve()
+    base_snap_dir = SNAPSHOTS_DIR.resolve()
+    
+    file_path = (snap_dir / clean_name).resolve()
+    if not file_path.is_file() and snap_dir != base_snap_dir:
+        file_path = (base_snap_dir / clean_name).resolve()
 
-@app.get("/api/recordings/{filename}")
+    # Enforce directory boundary isolation
+    if not (file_path.is_relative_to(snap_dir) or file_path.is_relative_to(base_snap_dir)):
+        raise HTTPException(status_code=403, detail="Access denied: path traversal restriction")
+        
+    if not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+        
+    media_type = "image/png" if ext == ".png" else ("image/webp" if ext == ".webp" else "image/jpeg")
+    return FileResponse(
+        str(file_path),
+        media_type=media_type,
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=86400",
+            "X-Content-Type-Options": "nosniff"
+        }
+    )
+
+@app.api_route("/api/recordings/{filename}", methods=["GET", "HEAD"])
 async def get_recording_file(filename: str):
-    """Serves recorded H.264 MP4 clips with HTTP Range seeking support for smooth web playback."""
+    """Serves recorded H.264 MP4 clips with HTTP Range seeking support, HEAD validation, and directory containment."""
     clean_name = Path(filename).name
     if not clean_name or clean_name != filename or ".." in filename or "/" in filename or "\\" in filename:
         raise HTTPException(status_code=400, detail="Invalid recording filename")
-    file_path = (RECORDINGS_DIR / clean_name).resolve()
-    if not file_path.is_relative_to(RECORDINGS_DIR.resolve()) or not file_path.is_file():
+        
+    if not re.match(r"^[a-zA-Z0-9_\-\.]+$", clean_name):
+        raise HTTPException(status_code=400, detail="Invalid characters in recording filename")
+        
+    ext = Path(clean_name).suffix.lower()
+    if ext not in ALLOWED_RECORDING_EXTS:
+        raise HTTPException(status_code=400, detail=f"Disallowed recording file format: {ext}")
+        
+    from app.storage import resolve_storage_dir
+    settings = get_system_settings()
+    rec_dir = resolve_storage_dir(settings.storage.recordings_dir, RECORDINGS_DIR).resolve()
+    base_rec_dir = RECORDINGS_DIR.resolve()
+    
+    file_path = (rec_dir / clean_name).resolve()
+    if not file_path.is_file() and rec_dir != base_rec_dir:
+        file_path = (base_rec_dir / clean_name).resolve()
+
+    # Enforce directory boundary isolation
+    if not (file_path.is_relative_to(rec_dir) or file_path.is_relative_to(base_rec_dir)):
+        raise HTTPException(status_code=403, detail="Access denied: path traversal restriction")
+        
+    if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Recording clip not found or still processing")
-    return FileResponse(str(file_path), media_type="video/mp4")
+        
+    return FileResponse(
+        str(file_path),
+        media_type="video/mp4",
+        headers={
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600",
+            "X-Content-Type-Options": "nosniff"
+        }
+    )
 
 @app.post("/api/cameras/{camera_id}/test-alert")
 async def trigger_camera_test_alert(camera_id: str, user: dict = Depends(require_admin)):
@@ -457,22 +736,100 @@ async def delete_event(event_id: str, user: dict = Depends(require_admin)):
     delete_event_from_db(event_id)
     return {"status": "deleted", "id": event_id}
 
+# ----------------- NATURAL LANGUAGE EVENT SEARCH (FEATURE 1) -----------------
+
+@app.get("/api/search/events")
+async def natural_event_search(
+    q: str = Query(..., description="Natural language search query"),
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Executes a natural language clip search using SQLite FTS5 index and temporal heuristics."""
+    from app.search import execute_natural_search
+    return execute_natural_search(query=q, limit=limit)
+
+# ----------------- MULTI-CAMERA INCIDENT STITCHING (FEATURE 2) -----------------
+
+@app.get("/api/incidents")
+async def get_incidents(
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user)
+):
+    """Returns cross-camera incidents and unified subject journeys."""
+    from app.storage import load_recent_incidents_from_db
+    from app.incident_correlator import backfill_all_incidents
+    incidents = load_recent_incidents_from_db(limit=limit)
+    if not incidents:
+        # Auto-backfill on first access if empty
+        await asyncio.to_thread(backfill_all_incidents)
+        incidents = load_recent_incidents_from_db(limit=limit)
+    return incidents
+
+@app.get("/api/incidents/{incident_id}")
+async def get_incident(incident_id: str, user: dict = Depends(get_current_user)):
+    """Returns a single incident with full details and sequential event IDs."""
+    from app.storage import get_incident_by_id
+    inc = get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return inc
+
+@app.post("/api/incidents/correlate")
+async def correlate_incidents(user: dict = Depends(require_admin)):
+    """Triggers complete multi-camera incident correlation and backfill across historical events."""
+    from app.incident_correlator import backfill_all_incidents
+    count = await asyncio.to_thread(backfill_all_incidents)
+    return {"status": "ok", "correlated_incidents": count}
+
+@app.delete("/api/incidents/{incident_id}")
+async def delete_incident(incident_id: str, user: dict = Depends(require_admin)):
+    """Deletes an incident record."""
+    from app.storage import delete_incident_from_db
+    deleted = delete_incident_from_db(incident_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return {"status": "deleted", "id": incident_id}
+
+# ----------------- ACTIVE DETERRENCE & SENTRY TRIGGERS (FEATURE 5) -----------------
+
+@app.post("/api/deterrence/test")
+async def trigger_test_deterrence(
+    camera_name: str = Query("Perimeter Sentry Test", description="Camera name for simulation"),
+    user: dict = Depends(require_admin)
+):
+    """Test-fires the active deterrence pipeline (MQTT lights, sirens, WebSocket alert)."""
+    from app.deterrence import active_deterrence_manager
+    res = active_deterrence_manager.trigger_test(camera_name=camera_name)
+    return {"status": "triggered", "result": res}
+
+@app.get("/api/deterrence/status")
+async def get_deterrence_status(user: dict = Depends(get_current_user)):
+    """Returns current active deterrence telemetry and trigger history."""
+    from app.deterrence import active_deterrence_manager
+    settings = get_system_settings()
+    return {
+        "enabled": settings.deterrence.enabled,
+        "config": settings.deterrence.model_dump(),
+        "last_trigger_time": active_deterrence_manager.last_trigger_time,
+        "history": active_deterrence_manager.trigger_history
+    }
+
 # ----------------- SYSTEM SETTINGS & CONTROL PANEL -----------------
 
 @app.get("/api/settings")
-async def get_settings(user: dict = Depends(get_current_user)):
+async def get_settings(refresh: bool = False, user: dict = Depends(get_current_user)):
     """Returns current system configuration and real-time storage disk usage statistics."""
     settings = get_system_settings()
-    disk_stats = get_storage_disk_stats()
+    disk_stats = get_storage_disk_stats(force_refresh=refresh)
     return {
         "settings": settings.model_dump(),
         "disk_stats": disk_stats
     }
 
 @app.get("/api/settings/hardware-capabilities")
-async def get_hardware_capabilities(user: dict = Depends(get_current_user)):
+async def get_hardware_capabilities(refresh: bool = False, user: dict = Depends(get_current_user)):
     """Detects CPU cores, NVIDIA GPU presence, Intel QuickSync availability, and active codec engines."""
-    return detect_hardware_capabilities()
+    return detect_hardware_capabilities(force_refresh=refresh)
 
 @app.put("/api/settings")
 async def update_settings(new_settings: SystemSettings, user: dict = Depends(require_admin)):
@@ -595,8 +952,32 @@ async def get_recent_memory_snapshots(limit: int = 30, user: dict = Depends(get_
 @app.post("/api/settings/test-ai-vision")
 async def test_ai_vision(config: AIVisionConfig, user: dict = Depends(require_admin)):
     """Generates a test frame and runs real-time natural language description via configured AI API."""
-    result = test_ai_vision_connection(config)
+    result = await asyncio.to_thread(test_ai_vision_connection, config)
     return result
+
+@app.get("/api/settings/ai-vision/status")
+async def get_ai_vision_status_endpoint(user: dict = Depends(require_admin)):
+    """Returns real-time connectivity, active endpoint, installed models, and health status for AI Vision."""
+    from app.ai_vision import get_ai_vision_health_status, probe_and_heal_ollama
+    settings = get_system_settings()
+    if settings.ai_vision.provider == "ollama":
+        probe_res = await asyncio.to_thread(probe_and_heal_ollama, settings.ai_vision, False)
+        return probe_res
+    return get_ai_vision_health_status(settings.ai_vision)
+
+@app.post("/api/settings/ai-vision/heal")
+async def heal_ai_vision_endpoint(user: dict = Depends(require_admin)):
+    """Triggers immediate diagnostics and self-healing across candidate host endpoints and local models."""
+    from app.ai_vision import probe_and_heal_ollama, test_ai_vision_connection
+    settings = get_system_settings()
+    heal_res = await asyncio.to_thread(probe_and_heal_ollama, settings.ai_vision, True)
+    if heal_res.get("success"):
+        test_res = await asyncio.to_thread(test_ai_vision_connection, settings.ai_vision)
+        heal_res["verification_test"] = test_res
+        logger.info(f"AI Vision self-heal succeeded: {heal_res.get('endpoint')} ({heal_res.get('active_model')})", component="ai_vision")
+    else:
+        logger.warning(f"AI Vision self-heal failed: {heal_res.get('error')}", component="ai_vision")
+    return heal_res
 
 @app.post("/api/settings/test-notification/{service}")
 async def test_notification(service: str, payload: dict, user: dict = Depends(require_admin)):
@@ -871,7 +1252,8 @@ async def download_gawkr_apk():
             return FileResponse(
                 str(p),
                 media_type="application/vnd.android.package-archive",
-                filename="gawkr.apk"
+                filename="gawkr.apk",
+                headers={"X-Content-Type-Options": "nosniff"}
             )
     raise HTTPException(status_code=404, detail="Gawkr APK not found. Please build the Android package.")
 

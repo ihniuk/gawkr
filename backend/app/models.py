@@ -12,9 +12,32 @@ class UserLogin(BaseModel):
     password: str
 
 class UserResponse(BaseModel):
-    username: str
-    role: str
-    token: str
+    username: Optional[str] = None
+    role: Optional[str] = None
+    token: Optional[str] = None
+    require_2fa: bool = False
+    challenge_token: Optional[str] = None
+
+class TOTPSetupResponse(BaseModel):
+    secret: str
+    qr_code_data_url: str
+    otpauth_url: str
+
+class TOTPEnableRequest(BaseModel):
+    secret: str
+    code: str
+
+class TOTPEnableResponse(BaseModel):
+    status: str
+    message: str
+    backup_codes: List[str]
+
+class TOTPDisableRequest(BaseModel):
+    password: str
+
+class TwoFactorLoginRequest(BaseModel):
+    challenge_token: str
+    code: str
 
 class UserCreate(BaseModel):
     username: str
@@ -36,6 +59,7 @@ class UserItem(BaseModel):
     username: str
     role: str
     created_at: float
+    is_totp_enabled: bool = False
 
 class DetectionZone(BaseModel):
     id: str
@@ -109,6 +133,7 @@ class CameraModel(BaseModel):
     model: str
     is_simulation: bool = False
     is_online: bool = False
+    error: Optional[str] = None
     created_at: float = Field(default_factory=time.time)
     settings: CameraSettings = Field(default_factory=CameraSettings)
 
@@ -265,6 +290,39 @@ class AIMemoryConfig(BaseModel):
         ),
     ])
 
+class ActiveDeterrenceConfig(BaseModel):
+    enabled: bool = False
+    night_only: bool = True
+    night_start_hour: int = 22 # 22:00 (10 PM)
+    night_end_hour: int = 6    # 06:00 (6 AM)
+    loiter_threshold_seconds: int = 10 # Seconds subject dwells in zone
+    ha_enabled: bool = True
+    ha_service: str = "light.turn_on" # light.turn_on, switch.turn_on
+    ha_entity_id: str = "light.front_porch"
+    ha_flash: bool = True
+    ha_flash_count: int = 3
+    critical_notification: bool = True
+    cooldown_seconds: int = 120
+    action_note: str = "Automated Floodlight / Deterrence Triggered"
+
+class IncidentItem(BaseModel):
+    id: str
+    start_time: float
+    end_time: float
+    title: str
+    summary: str
+    camera_sequence: List[str]
+    event_ids: List[str]
+    threat_level: str = "Safe"
+    created_at: float = Field(default_factory=time.time)
+    preview_snapshots: List[str] = Field(default_factory=list)
+
+class NaturalSearchResponse(BaseModel):
+    query: str
+    parsed_filters: Dict[str, Any]
+    total_matches: int
+    events: List[DetectionEvent]
+
 class SystemSettings(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     ai_vision: AIVisionConfig = Field(default_factory=AIVisionConfig)
@@ -272,6 +330,7 @@ class SystemSettings(BaseModel):
     hardware: HardwareConfig = Field(default_factory=HardwareConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
     ai_memory: AIMemoryConfig = Field(default_factory=AIMemoryConfig)
+    deterrence: ActiveDeterrenceConfig = Field(default_factory=ActiveDeterrenceConfig)
 
 class DiscoveredDevice(BaseModel):
     ip: str

@@ -2,7 +2,8 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Film, LayoutGrid, Clock, Calendar, Filter, 
   Download, Play, Trash2, Camera, Search, ChevronRight, 
-  Layers, CheckCircle, Eye, RefreshCw, Sparkles, Brain
+  Layers, CheckCircle, Eye, RefreshCw, Sparkles, Brain,
+  Waypoints, GitMerge, ShieldAlert, AlertTriangle, Check, X, ArrowRight
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -15,7 +16,7 @@ export default function ClipReviewPage({
   onRefreshEvents,
   onAddToMemory
 }) {
-  const [viewMode, setViewMode] = useState('mosaic'); // 'mosaic', 'timeline', 'list'
+  const [viewMode, setViewMode] = useState('mosaic'); // 'mosaic', 'timeline', 'list', 'journeys'
   const [selectedCameraId, setSelectedCameraId] = useState('all');
   const [selectedClass, setSelectedClass] = useState('all');
   const [selectedDateFilter, setSelectedDateFilter] = useState('7days'); // 'today', 'yesterday', '7days', '21days', 'all'
@@ -24,6 +25,79 @@ export default function ClipReviewPage({
   const [isLoadingArchive, setIsLoadingArchive] = useState(false);
   const [hoveredEvent, setHoveredEvent] = useState(null);
   const [timelineCursor, setTimelineCursor] = useState(null);
+
+  // Natural Language Search State (Feature 1)
+  const [naturalQuery, setNaturalQuery] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [naturalSearchResult, setNaturalSearchResult] = useState(null);
+
+  // Multi-Camera Incidents State (Feature 2)
+  const [incidents, setIncidents] = useState([]);
+  const [isLoadingIncidents, setIsLoadingIncidents] = useState(false);
+  const [isCorrelating, setIsCorrelating] = useState(false);
+
+  const handleNaturalSearch = async (overrideQuery = null) => {
+    const q = overrideQuery !== null ? overrideQuery : naturalQuery;
+    if (!q || !q.trim()) {
+      setNaturalSearchResult(null);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const res = await api.searchEvents(q.trim(), 100);
+      setNaturalSearchResult(res);
+      if (overrideQuery !== null) setNaturalQuery(overrideQuery);
+    } catch (err) {
+      console.error('Natural search error:', err);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleClearSearch = () => {
+    setNaturalQuery('');
+    setNaturalSearchResult(null);
+  };
+
+  const loadIncidents = async () => {
+    setIsLoadingIncidents(true);
+    try {
+      const res = await api.getIncidents(60);
+      setIncidents(res || []);
+    } catch (err) {
+      console.error('Failed to load incidents:', err);
+    } finally {
+      setIsLoadingIncidents(false);
+    }
+  };
+
+  const handleCorrelateIncidents = async () => {
+    setIsCorrelating(true);
+    try {
+      await api.correlateIncidents();
+      await loadIncidents();
+    } catch (err) {
+      console.error('Failed to correlate incidents:', err);
+    } finally {
+      setIsCorrelating(false);
+    }
+  };
+
+  const handleDeleteIncident = async (id) => {
+    if (!window.confirm('Delete this incident session?')) return;
+    try {
+      await api.deleteIncident(id);
+      setIncidents(prev => prev.filter(i => i.id !== id));
+    } catch (err) {
+      console.error('Failed to delete incident:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (viewMode === 'journeys') {
+      loadIncidents();
+    }
+  }, [viewMode]);
 
   const loadArchiveEvents = async () => {
     setIsLoadingArchive(true);
@@ -64,9 +138,10 @@ export default function ClipReviewPage({
     }
   }, [events]);
 
-  // Filter events based on class
+  // Filter events based on class and natural search
   const filteredEvents = useMemo(() => {
-    return archiveEvents.filter(evt => {
+    const source = naturalSearchResult ? naturalSearchResult.events : archiveEvents;
+    return (source || []).filter(evt => {
       // Class filter
       if (selectedClass !== 'all') {
         const hasClass = evt.objects?.some(o => o.label.toLowerCase() === selectedClass.toLowerCase());
@@ -74,7 +149,7 @@ export default function ClipReviewPage({
       }
       return true;
     });
-  }, [archiveEvents, selectedClass]);
+  }, [archiveEvents, naturalSearchResult, selectedClass]);
 
   // Group events by date & hour for the mosaic view
   const groupedEvents = useMemo(() => {
@@ -111,10 +186,12 @@ export default function ClipReviewPage({
           <h2 style={{ fontSize: '1.35rem', fontWeight: 800, letterSpacing: '-0.02em', display: 'flex', alignItems: 'center', gap: '10px' }}>
             <Film size={22} color="var(--accent-cyan)" />
             <span>Surveillance Clip Archive</span>
-            <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>{filteredEvents.length} Clips</span>
+            <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>
+              {viewMode === 'journeys' ? `${incidents.length} Incidents` : `${filteredEvents.length} Clips`}
+            </span>
           </h2>
           <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '2px' }}>
-            Browse and inspect high-fidelity H.264 video clips and AI classifications across all cameras.
+            Browse high-fidelity recordings, stitched multi-camera subject journeys, and natural language semantic search.
           </p>
         </div>
 
@@ -167,7 +244,169 @@ export default function ClipReviewPage({
           >
             <Layers size={14} /> <span>List</span>
           </button>
+          <button
+            className="btn-glass"
+            style={{
+              padding: '6px 12px',
+              border: 'none',
+              borderRadius: '7px',
+              background: viewMode === 'journeys' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+              color: viewMode === 'journeys' ? 'var(--accent-cyan)' : 'var(--text-muted)'
+            }}
+            onClick={() => setViewMode('journeys')}
+          >
+            <Waypoints size={14} /> <span>Multi-Camera Journeys</span>
+          </button>
         </div>
+      </div>
+
+      {/* FEATURE 1: ASK GAWKR - NATURAL LANGUAGE SEMANTIC SEARCH BAR */}
+      <div className="glass-panel" style={{
+        borderRadius: '14px',
+        padding: '16px 18px',
+        marginBottom: '16px',
+        background: 'linear-gradient(135deg, rgba(6, 182, 212, 0.08) 0%, rgba(15, 23, 42, 0.6) 100%)',
+        border: '1px solid rgba(6, 182, 212, 0.25)'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '0.88rem', color: 'var(--accent-cyan)' }}>
+            <Sparkles size={16} />
+            <span>Ask Gawkr • Natural Language Semantic Search</span>
+          </div>
+          {naturalSearchResult && (
+            <button
+              className="btn-glass"
+              onClick={handleClearSearch}
+              style={{ fontSize: '0.74rem', padding: '3px 8px', color: '#f87171', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              <X size={12} /> Clear Filter
+            </button>
+          )}
+        </div>
+
+        <form
+          onSubmit={(e) => { e.preventDefault(); handleNaturalSearch(); }}
+          style={{ display: 'flex', gap: '8px', alignItems: 'center' }}
+        >
+          <div style={{ position: 'relative', flex: 1 }}>
+            <Search size={15} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
+            <input
+              type="text"
+              className="glass-input"
+              value={naturalQuery}
+              onChange={(e) => setNaturalQuery(e.target.value)}
+              placeholder="Ask in plain English, e.g. 'courier delivery yesterday morning' or 'suspicious person at front porch at night'..."
+              style={{
+                width: '100%',
+                paddingLeft: '36px',
+                paddingRight: naturalQuery ? '32px' : '12px',
+                fontSize: '0.84rem',
+                background: 'rgba(8, 12, 22, 0.7)'
+              }}
+            />
+            {naturalQuery && (
+              <button
+                type="button"
+                onClick={handleClearSearch}
+                style={{
+                  position: 'absolute',
+                  right: '10px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer'
+                }}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+          <button
+            type="submit"
+            className="btn-primary"
+            disabled={isSearching || !naturalQuery.trim()}
+            style={{ padding: '8px 16px', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}
+          >
+            <Search size={14} className={isSearching ? 'animate-spin' : ''} />
+            <span>{isSearching ? 'Searching...' : 'Ask Gawkr'}</span>
+          </button>
+        </form>
+
+        {/* Heuristic Search Feedback Pill Row */}
+        {naturalSearchResult && (
+          <div style={{
+            marginTop: '10px',
+            padding: '8px 12px',
+            background: 'rgba(6, 182, 212, 0.12)',
+            borderRadius: '8px',
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: '8px',
+            fontSize: '0.76rem'
+          }}>
+            <span style={{ fontWeight: 700, color: 'var(--accent-cyan)' }}>
+              Found {naturalSearchResult.total_matches} clip{naturalSearchResult.total_matches === 1 ? '' : 's'}:
+            </span>
+            {naturalSearchResult.parsed_filters?.explanation?.map((exp, idx) => (
+              <span key={idx} style={{
+                background: 'rgba(255, 255, 255, 0.1)',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                color: '#e2e8f0'
+              }}>
+                ✓ {exp}
+              </span>
+            ))}
+            {naturalSearchResult.parsed_filters?.fts_query && (
+              <span style={{
+                background: 'rgba(6, 182, 212, 0.25)',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                color: 'var(--accent-cyan)',
+                fontFamily: 'monospace'
+              }}>
+                FTS5: {naturalSearchResult.parsed_filters.fts_query}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Quick Suggestion Chips */}
+        {!naturalSearchResult && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '10px', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Try asking:</span>
+            {[
+              '📦 Delivery courier in driveway',
+              '⚠️ Suspicious person at night',
+              '🚗 Vehicle arrival yesterday',
+              '🚶 Loitering front porch',
+              '🌅 Activity this morning'
+            ].map(prompt => (
+              <button
+                key={prompt}
+                type="button"
+                className="btn-glass"
+                onClick={() => {
+                  const cleanPrompt = prompt.replace(/^[^\w\s]+\s*/, '');
+                  setNaturalQuery(cleanPrompt);
+                  handleNaturalSearch(cleanPrompt);
+                }}
+                style={{
+                  fontSize: '0.72rem',
+                  padding: '3px 8px',
+                  borderRadius: '6px',
+                  background: 'rgba(255, 255, 255, 0.04)',
+                  borderColor: 'rgba(255, 255, 255, 0.08)'
+                }}
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Filter Controls Bar */}
@@ -737,6 +976,262 @@ export default function ClipReviewPage({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* VIEW 4: MULTI-CAMERA JOURNEYS & INCIDENTS (FEATURE 2) */}
+      {viewMode === 'journeys' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Incidents Header & Controls */}
+          <div className="glass-panel" style={{
+            borderRadius: '14px',
+            padding: '16px 20px',
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px'
+          }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 800, fontSize: '1.05rem' }}>
+                <Waypoints size={20} color="var(--accent-cyan)" />
+                <span>Multi-Camera Journeys & Incident Stitching</span>
+                <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>{incidents.length} Journeys</span>
+              </div>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '3px' }}>
+                Correlates subjects traversing between cameras within a 180s sliding window into unified incident timelines.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                className="btn-glass"
+                onClick={loadIncidents}
+                disabled={isLoadingIncidents}
+                style={{ fontSize: '0.76rem', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <RefreshCw size={13} className={isLoadingIncidents ? 'animate-spin' : ''} />
+                <span>Refresh</span>
+              </button>
+              {isAdmin && (
+                <button
+                  className="btn-primary"
+                  onClick={handleCorrelateIncidents}
+                  disabled={isCorrelating}
+                  style={{ fontSize: '0.76rem', padding: '6px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                >
+                  <GitMerge size={14} className={isCorrelating ? 'animate-spin' : ''} />
+                  <span>{isCorrelating ? 'Correlating...' : 'Correlate All History'}</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Incidents List */}
+          {isLoadingIncidents && incidents.length === 0 ? (
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <RefreshCw size={24} className="animate-spin" style={{ margin: '0 auto 12px', color: 'var(--accent-cyan)' }} />
+              <p style={{ fontSize: '0.88rem' }}>Stitching and correlating multi-camera incidents...</p>
+            </div>
+          ) : incidents.length === 0 ? (
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '40px', textAlign: 'center', color: 'var(--text-muted)' }}>
+              <Waypoints size={36} style={{ margin: '0 auto 12px', opacity: 0.4 }} />
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: '#e2e8f0', marginBottom: '6px' }}>No Correlated Incidents Found</h3>
+              <p style={{ fontSize: '0.8rem', maxWidth: '440px', margin: '0 auto 16px' }}>
+                Multi-camera journeys group detections across cameras within 180s. Click below to analyze your historical surveillance events.
+              </p>
+              {isAdmin && (
+                <button className="btn-primary" onClick={handleCorrelateIncidents} disabled={isCorrelating}>
+                  <GitMerge size={14} /> Correlate All Historical Clips
+                </button>
+              )}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {incidents.map((inc) => {
+                const startDate = new Date(inc.start_time * 1000);
+                const endDate = new Date(inc.end_time * 1000);
+                const durationSec = Math.max(1, Math.round(inc.end_time - inc.start_time));
+                const durationLabel = durationSec < 60 ? `${durationSec}s` : `${Math.floor(durationSec / 60)}m ${durationSec % 60}s`;
+                
+                const isThreat = inc.threat_level?.toLowerCase() === 'critical' || inc.threat_level?.toLowerCase() === 'danger';
+                const isSuspicious = inc.threat_level?.toLowerCase() === 'suspicious' || inc.threat_level?.toLowerCase() === 'warning';
+                
+                const badgeColor = isThreat ? '#ef4444' : isSuspicious ? '#f59e0b' : '#10b981';
+                const badgeBg = isThreat ? 'rgba(239, 68, 68, 0.15)' : isSuspicious ? 'rgba(245, 158, 11, 0.15)' : 'rgba(16, 185, 129, 0.15)';
+                const badgeBorder = isThreat ? 'rgba(239, 68, 68, 0.3)' : isSuspicious ? 'rgba(245, 158, 11, 0.3)' : 'rgba(16, 185, 129, 0.3)';
+
+                // Deduplicate consecutive cameras for trajectory ribbon
+                const progression = [];
+                inc.camera_sequence.forEach(cam => {
+                  if (progression.length === 0 || progression[progression.length - 1] !== cam) {
+                    progression.push(cam);
+                  }
+                });
+
+                return (
+                  <div
+                    key={inc.id}
+                    className="glass-panel"
+                    style={{
+                      borderRadius: '14px',
+                      padding: '18px 20px',
+                      borderLeft: `4px solid ${badgeColor}`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '14px',
+                      transition: 'all 0.2s ease'
+                    }}
+                  >
+                    {/* Top Row: Threat, Time, Controls */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                        <span style={{
+                          padding: '3px 10px',
+                          borderRadius: '6px',
+                          fontSize: '0.72rem',
+                          fontWeight: 800,
+                          textTransform: 'uppercase',
+                          letterSpacing: '0.04em',
+                          color: badgeColor,
+                          background: badgeBg,
+                          border: `1px solid ${badgeBorder}`,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '5px'
+                        }}>
+                          {isThreat ? <AlertTriangle size={12} /> : isSuspicious ? <ShieldAlert size={12} /> : <CheckCircle size={12} />}
+                          {inc.threat_level || 'Safe'}
+                        </span>
+
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                          <Clock size={13} />
+                          {startDate.toLocaleDateString([], { month: 'short', day: 'numeric' })} • {startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          {durationSec > 0 && ` (${durationLabel})`}
+                        </span>
+
+                        <span className="hud-chip" style={{ fontSize: '0.72rem' }}>
+                          {inc.event_ids.length} Detection{inc.event_ids.length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+
+                      {isAdmin && (
+                        <button
+                          className="btn-glass"
+                          onClick={() => handleDeleteIncident(inc.id)}
+                          style={{ padding: '4px 8px', fontSize: '0.72rem', color: 'var(--text-muted)' }}
+                          title="Delete Incident"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Incident Title */}
+                    <h3 style={{ fontSize: '1.05rem', fontWeight: 800, margin: 0, color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span>{inc.title}</span>
+                    </h3>
+
+                    {/* Camera Progression Trajectory Ribbon */}
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px',
+                      overflowX: 'auto',
+                      padding: '8px 12px',
+                      background: 'rgba(8, 12, 22, 0.6)',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.06)'
+                    }}>
+                      <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                        Camera Sequence:
+                      </span>
+                      {progression.map((cam, idx) => (
+                        <React.Fragment key={idx}>
+                          <span style={{
+                            padding: '3px 8px',
+                            background: 'rgba(6, 182, 212, 0.15)',
+                            border: '1px solid rgba(6, 182, 212, 0.3)',
+                            borderRadius: '5px',
+                            fontSize: '0.74rem',
+                            fontWeight: 700,
+                            color: 'var(--accent-cyan)',
+                            whiteSpace: 'nowrap'
+                          }}>
+                            {cam}
+                          </span>
+                          {idx < progression.length - 1 && (
+                            <ArrowRight size={13} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                          )}
+                        </React.Fragment>
+                      ))}
+                    </div>
+
+                    {/* Preview Snapshots Strip */}
+                    {inc.preview_snapshots && inc.preview_snapshots.length > 0 && (
+                      <div style={{
+                        display: 'grid',
+                        gridTemplateColumns: `repeat(auto-fill, minmax(130px, 1fr))`,
+                        gap: '8px',
+                        marginTop: '2px'
+                      }}>
+                        {inc.preview_snapshots.map((snapUrl, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              position: 'relative',
+                              borderRadius: '8px',
+                              overflow: 'hidden',
+                              background: '#090d16',
+                              aspectRatio: '16/9',
+                              border: '1px solid rgba(255, 255, 255, 0.08)'
+                            }}
+                          >
+                            <img
+                              src={snapUrl}
+                              alt="Incident Preview"
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                            <div style={{
+                              position: 'absolute',
+                              bottom: 0,
+                              left: 0,
+                              right: 0,
+                              padding: '2px 6px',
+                              background: 'linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)',
+                              fontSize: '0.66rem',
+                              color: '#e2e8f0'
+                            }}>
+                              Camera {idx + 1}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* AI Synthesized Narrative */}
+                    {inc.summary && (
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: '8px',
+                        background: 'rgba(15, 23, 42, 0.45)',
+                        border: '1px solid rgba(255, 255, 255, 0.05)',
+                        borderRadius: '8px',
+                        padding: '10px 12px',
+                        fontSize: '0.78rem',
+                        lineHeight: '1.45',
+                        color: '#cbd5e1'
+                      }}>
+                        <Brain size={15} color="var(--accent-cyan)" style={{ marginTop: '2px', flexShrink: 0 }} />
+                        <div>{inc.summary}</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
     </div>

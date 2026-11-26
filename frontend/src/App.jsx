@@ -27,6 +27,7 @@ export default function App() {
   const [currentTab, setCurrentTab] = useState('live'); // 'live' or 'clips'
   
   // Modals & Drawers state
+  const [controlPanelTab, setControlPanelTab] = useState('cameras');
   const [isDiscoveryOpen, setIsDiscoveryOpen] = useState(false);
   const [isEventDrawerOpen, setIsEventDrawerOpen] = useState(false);
   const [isLoginOpen, setIsLoginOpen] = useState(false);
@@ -200,6 +201,11 @@ export default function App() {
 
   const handleTakeSnapshot = async (cam) => {
     try {
+      try {
+        await api.saveCameraSnapshot(cam.id);
+      } catch (e) {
+        console.warn("Could not save snapshot event to database:", e);
+      }
       const snapUrl = await api.captureSnapshot(cam.id);
       const a = document.createElement('a');
       a.href = snapUrl;
@@ -608,7 +614,10 @@ export default function App() {
         currentTab={currentTab}
         setCurrentTab={handleTabChange}
         alertCount={drawerAlerts.length}
-        onOpenDiscovery={() => setIsDiscoveryOpen(true)}
+        onOpenDiscovery={() => {
+          setControlPanelTab('cameras');
+          setCurrentTab('control_panel');
+        }}
         onOpenEvents={() => setIsEventDrawerOpen(true)}
         onOpenLogin={() => setIsLoginOpen(true)}
         onLogout={handleLogout}
@@ -627,7 +636,10 @@ export default function App() {
             onOpenTelemetry={(cam) => setActiveTelemetryCamera(cam)}
             onOpenZones={(cam) => setActiveZoneModalCamera(cam)}
             onOpenAiSettings={(cam) => setActiveSettingsCamera(cam)}
-            onOpenDiscovery={() => setIsDiscoveryOpen(true)}
+            onOpenDiscovery={() => {
+              setControlPanelTab('cameras');
+              setCurrentTab('control_panel');
+            }}
           />
         )}
         {currentTab === 'clips' && (
@@ -645,8 +657,14 @@ export default function App() {
           <ControlPanel
             isAdmin={isAdmin}
             currentUser={user}
+            initialTab={controlPanelTab}
+            onTabChange={setControlPanelTab}
             initialMemoryData={memoryInitialData}
             onClearInitialMemoryData={() => setMemoryInitialData(null)}
+            cameras={cameras}
+            onCameraAdded={handleCameraAdded}
+            onRefreshCameras={loadInitialData}
+            onOpenAiSettings={(cam) => setActiveSettingsCamera(cam)}
           />
         )}
         {currentTab === 'briefing' && (

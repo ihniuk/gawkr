@@ -6,13 +6,32 @@ import {
   Users, UserPlus, Key, Shield, ShieldCheck, UserCheck, X,
   Brain, Package, Truck, User, Plus, Edit2, Tag, Check, Info,
   Camera, Upload, Image as ImageIcon,
-  Terminal, Globe, Activity, Filter, Search, FileText, Lock
+  Terminal, Globe, Activity, Filter, Search, FileText, Lock,
+  Smartphone, QrCode, Copy, Download
 } from 'lucide-react';
 import { api, authStorage } from '../api/client';
 import { evaluatePasswordStrength } from '../utils/security';
+import DiscoveryModal from './DiscoveryModal';
 
-export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, onClearInitialMemoryData }) {
-  const [activeTab, setActiveTab] = useState('storage'); // 'storage', 'hardware', 'ai_vision', 'ai_memory', 'notifications', 'users'
+export default function ControlPanel({ 
+  isAdmin, 
+  currentUser, 
+  initialTab = 'cameras',
+  onTabChange,
+  initialMemoryData, 
+  onClearInitialMemoryData,
+  cameras = [],
+  onCameraAdded,
+  onRefreshCameras,
+  onOpenAiSettings
+}) {
+  const [activeTab, setActiveTab] = useState(initialTab || 'cameras');
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [settings, setSettings] = useState(null);
   const [diskStats, setDiskStats] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -44,6 +63,9 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
   // AI Vision Testing state
   const [isTestingVision, setIsTestingVision] = useState(false);
   const [visionTestResult, setVisionTestResult] = useState(null);
+  const [aiVisionHealth, setAiVisionHealth] = useState(null);
+  const [isHealingVision, setIsHealingVision] = useState(false);
+  const [healVisionResult, setHealVisionResult] = useState(null);
 
   // Notification Testing state
   const [testingService, setTestingService] = useState(null);
@@ -98,71 +120,141 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
   const [unblockFeedback, setUnblockFeedback] = useState('');
   const [manualBlockIp, setManualBlockIp] = useState('');
 
+  // 2FA Security State
+  const [twoFactorStatus, setTwoFactorStatus] = useState(null);
+  const [is2faSetupOpen, setIs2faSetupOpen] = useState(false);
+  const [twoFactorSetupData, setTwoFactorSetupData] = useState(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorBackupCodes, setTwoFactorBackupCodes] = useState(null);
+  const [twoFactorDisablePassword, setTwoFactorDisablePassword] = useState('');
+  const [is2faDisableOpen, setIs2faDisableOpen] = useState(false);
+  const [is2faLoading, setIs2faLoading] = useState(false);
+  const [twoFactorError, setTwoFactorError] = useState('');
+  const [twoFactorFeedback, setTwoFactorFeedback] = useState('');
+
+  // Active Perimeter Deterrence State (Feature 5)
+  const [deterrenceStatus, setDeterrenceStatus] = useState(null);
+  const [isTestingDeterrence, setIsTestingDeterrence] = useState(false);
+  const [deterrenceFeedback, setDeterrenceFeedback] = useState(null);
+
+  const fetchDeterrenceStatus = async () => {
+    try {
+      const res = await api.getDeterrenceStatus();
+      setDeterrenceStatus(res);
+    } catch (err) {
+      console.error('Failed to load deterrence status:', err);
+    }
+  };
+
+  const handleTestDeterrence = async () => {
+    setIsTestingDeterrence(true);
+    setDeterrenceFeedback(null);
+    try {
+      const res = await api.testDeterrenceTrigger('Front Porch (Sentry Simulation)');
+      setDeterrenceFeedback({
+        success: true,
+        message: `✓ Deterrence action fired successfully! Target: ${res.result?.target_entity || 'Home Assistant'} (${res.result?.ha_service})`
+      });
+      fetchDeterrenceStatus();
+    } catch (err) {
+      setDeterrenceFeedback({
+        success: false,
+        message: `✗ Failed to trigger deterrence test: ${err.message}`
+      });
+    } finally {
+      setIsTestingDeterrence(false);
+    }
+  };
+
   const activeUser = currentUser || authStorage.getUser() || { username: 'admin', role: 'admin' };
 
   const loadSettings = async () => {
     setIsLoading(true);
     setErrorMessage('');
     try {
-      const res = await api.getSettings();
-      const s = res.settings || {};
-      if (!s.hardware) {
-        s.hardware = {
-          hw_accel_backend: 'auto',
-          video_encoder: 'auto',
-          encoding_preset: 'ultrafast',
-          encoding_crf: 26
-        };
+      const [settingsResult, capsResult] = await Promise.allSettled([
+        api.getSettings(),
+        api.getHardwareCapabilities()
+      ]);
+
+      if (settingsResult.status === 'fulfilled') {
+        const res = settingsResult.value;
+        const s = res.settings || {};
+        if (!s.hardware) {
+          s.hardware = {
+            hw_accel_backend: 'auto',
+            video_encoder: 'auto',
+            encoding_preset: 'ultrafast',
+            encoding_crf: 26
+          };
+        }
+        if (!s.detection) {
+          s.detection = {
+            global_confidence_threshold: 0.50,
+            person_min_confidence: 0.45,
+            vehicle_min_confidence: 0.60,
+            animal_min_confidence: 0.45
+          };
+        }
+        if (!s.ai_memory) {
+          s.ai_memory = {
+            enabled: true,
+            items: [
+              {
+                id: 'mem_amazon',
+                category: 'courier',
+                name: 'Amazon Delivery',
+                cues: 'Blue Prime van, Mercedes/Ford van, courier wearing blue/dark vest carrying boxes or packages with Amazon smile logo',
+                action_note: 'Package delivery / courier drop-off',
+                threat_bias: 'Safe',
+                enabled: true
+              },
+              {
+                id: 'mem_royalmail',
+                category: 'courier',
+                name: 'Royal Mail',
+                cues: 'Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages',
+                action_note: 'Postal delivery / mail drop',
+                threat_bias: 'Safe',
+                enabled: true
+              },
+              {
+                id: 'mem_dpd',
+                category: 'courier',
+                name: 'DPD / Evri',
+                cues: 'White van with red cube DPD logo, or courier delivering parcels',
+                action_note: 'Courier package delivery',
+                threat_bias: 'Safe',
+                enabled: true
+              }
+            ]
+          };
+        }
+        if (!s.deterrence) {
+          s.deterrence = {
+            enabled: false,
+            night_only: true,
+            night_start_hour: 22,
+            night_end_hour: 6,
+            loiter_threshold_seconds: 10,
+            ha_enabled: true,
+            ha_service: 'light.turn_on',
+            ha_entity_id: 'light.front_porch',
+            ha_flash: true,
+            ha_flash_count: 3,
+            critical_notification: true,
+            cooldown_seconds: 120,
+            action_note: 'Automated Floodlight / Deterrence Triggered'
+          };
+        }
+        setSettings(s);
+        setDiskStats(res.disk_stats);
+      } else {
+        throw new Error(settingsResult.reason?.message || 'Failed to load system settings');
       }
-      if (!s.detection) {
-        s.detection = {
-          global_confidence_threshold: 0.50,
-          person_min_confidence: 0.45,
-          vehicle_min_confidence: 0.60,
-          animal_min_confidence: 0.45
-        };
-      }
-      if (!s.ai_memory) {
-        s.ai_memory = {
-          enabled: true,
-          items: [
-            {
-              id: 'mem_amazon',
-              category: 'courier',
-              name: 'Amazon Delivery',
-              cues: 'Blue Prime van, Mercedes/Ford van, courier wearing blue/dark vest carrying boxes or packages with Amazon smile logo',
-              action_note: 'Package delivery / courier drop-off',
-              threat_bias: 'Safe',
-              enabled: true
-            },
-            {
-              id: 'mem_royalmail',
-              category: 'courier',
-              name: 'Royal Mail',
-              cues: 'Red Royal Mail van, or postal worker wearing bright red hi-vis vest/jacket with Royal Mail crest delivering post or packages',
-              action_note: 'Postal delivery / mail drop',
-              threat_bias: 'Safe',
-              enabled: true
-            },
-            {
-              id: 'mem_dpd',
-              category: 'courier',
-              name: 'DPD / Evri',
-              cues: 'White van with red cube DPD logo, or courier delivering parcels',
-              action_note: 'Courier package delivery',
-              threat_bias: 'Safe',
-              enabled: true
-            }
-          ]
-        };
-      }
-      setSettings(s);
-      setDiskStats(res.disk_stats);
-      try {
-        const caps = await api.getHardwareCapabilities();
-        setHwCaps(caps);
-      } catch (e) {
-        console.warn('Hardware capabilities probe error:', e);
+
+      if (capsResult.status === 'fulfilled') {
+        setHwCaps(capsResult.value);
       }
     } catch (err) {
       setErrorMessage(err.message || 'Failed to load system settings');
@@ -329,8 +421,13 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
       loadUsers();
       loadLoginAudit();
       loadBlockedIps();
+      load2faStatus();
     } else if (activeTab === 'logs') {
       loadSystemLogs();
+    } else if (activeTab === 'ai_vision') {
+      fetchAiVisionHealth();
+    } else if (activeTab === 'deterrence') {
+      fetchDeterrenceStatus();
     }
   }, [activeTab]);
 
@@ -461,6 +558,85 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     }
   };
 
+  const load2faStatus = async () => {
+    try {
+      const st = await api.get2faStatus();
+      setTwoFactorStatus(st);
+    } catch (e) {
+      console.warn('Could not load 2FA status:', e);
+    }
+  };
+
+  const handleOpen2faSetup = async () => {
+    setIs2faLoading(true);
+    setTwoFactorError('');
+    setTwoFactorCode('');
+    setTwoFactorBackupCodes(null);
+    try {
+      const data = await api.setup2fa();
+      setTwoFactorSetupData(data);
+      setIs2faSetupOpen(true);
+    } catch (e) {
+      alert('Failed to initialize 2FA setup: ' + (e.message || e));
+    } finally {
+      setIs2faLoading(false);
+    }
+  };
+
+  const handleConfirm2faEnable = async (e) => {
+    if (e) e.preventDefault();
+    if (!twoFactorSetupData || !twoFactorCode.trim()) return;
+    setIs2faLoading(true);
+    setTwoFactorError('');
+    try {
+      const res = await api.enable2fa(twoFactorSetupData.secret, twoFactorCode.trim());
+      setTwoFactorBackupCodes(res.backup_codes);
+      setTwoFactorFeedback('✓ Two-Factor Authentication is now actively enabled!');
+      setTimeout(() => setTwoFactorFeedback(''), 5000);
+      load2faStatus();
+      loadUsers();
+    } catch (e) {
+      setTwoFactorError(e.message || 'Verification failed. Please check the code and try again.');
+    } finally {
+      setIs2faLoading(false);
+    }
+  };
+
+  const handleDisable2fa = async (e) => {
+    if (e) e.preventDefault();
+    if (!twoFactorDisablePassword) return;
+    setIs2faLoading(true);
+    setTwoFactorError('');
+    try {
+      await api.disable2fa(twoFactorDisablePassword);
+      setIs2faDisableOpen(false);
+      setTwoFactorDisablePassword('');
+      setTwoFactorFeedback('✓ Two-Factor Authentication disabled.');
+      setTimeout(() => setTwoFactorFeedback(''), 5000);
+      load2faStatus();
+      loadUsers();
+    } catch (e) {
+      setTwoFactorError(e.message || 'Failed to disable 2FA');
+    } finally {
+      setIs2faLoading(false);
+    }
+  };
+
+  const handleAdminReset2fa = async (targetUsername) => {
+    if (!window.confirm(`Reset and disable 2FA for user '${targetUsername}'? Use this if the user lost their authenticator device.`)) return;
+    try {
+      await api.adminReset2fa(targetUsername);
+      setUserActionSuccess(`✓ 2FA has been reset and disabled for '${targetUsername}'`);
+      setTimeout(() => setUserActionSuccess(''), 4000);
+      loadUsers();
+      if (activeUser.username === targetUsername) {
+        load2faStatus();
+      }
+    } catch (e) {
+      setUserActionError(e.message || 'Failed to reset 2FA');
+    }
+  };
+
   const handleSave = async () => {
     if (!settings) return;
     setIsSaving(true);
@@ -479,6 +655,8 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
     }
   };
 
+  const handleSaveSettings = handleSave;
+
   const handleTestAiVision = async () => {
     setIsTestingVision(true);
     setVisionTestResult(null);
@@ -492,6 +670,42 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
       });
     } finally {
       setIsTestingVision(false);
+    }
+  };
+
+  const fetchAiVisionHealth = async () => {
+    try {
+      const res = await api.getAiVisionStatus();
+      setAiVisionHealth(res);
+    } catch (err) {
+      console.warn('Failed to fetch AI Vision status:', err);
+    }
+  };
+
+  const handleHealAiVision = async () => {
+    setIsHealingVision(true);
+    setHealVisionResult(null);
+    try {
+      const res = await api.healAiVision();
+      setHealVisionResult(res);
+      setAiVisionHealth(res);
+      if (res?.endpoint && settings?.ai_vision?.provider === 'ollama') {
+        setSettings(prev => ({
+          ...prev,
+          ai_vision: {
+            ...prev.ai_vision,
+            base_url: res.endpoint,
+            model_name: res.active_model || prev.ai_vision.model_name
+          }
+        }));
+      }
+    } catch (err) {
+      setHealVisionResult({
+        success: false,
+        error: err.message || 'Auto-healing probe encountered an error.'
+      });
+    } finally {
+      setIsHealingVision(false);
     }
   };
 
@@ -914,6 +1128,27 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
             flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
+            background: activeTab === 'cameras' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'cameras' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => {
+            setActiveTab('cameras');
+            if (onTabChange) onTabChange('cameras');
+          }}
+        >
+          <Radio size={14} /> Camera Discovery
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 120px',
+            border: 'none',
+            borderRadius: '8px',
             background: activeTab === 'storage' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
             color: activeTab === 'storage' ? 'var(--accent-cyan)' : 'var(--text-muted)',
             fontWeight: 700,
@@ -1004,6 +1239,24 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
             flex: '1 1 120px',
             border: 'none',
             borderRadius: '8px',
+            background: activeTab === 'deterrence' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
+            color: activeTab === 'deterrence' ? 'var(--accent-cyan)' : 'var(--text-muted)',
+            fontWeight: 700,
+            fontSize: '0.8rem',
+            justifyContent: 'center',
+            padding: '8px 10px'
+          }}
+          onClick={() => setActiveTab('deterrence')}
+        >
+          <ShieldAlert size={14} /> Active Deterrence
+        </button>
+
+        <button
+          className="btn-glass"
+          style={{
+            flex: '1 1 120px',
+            border: 'none',
+            borderRadius: '8px',
             background: activeTab === 'users' ? 'rgba(6, 182, 212, 0.25)' : 'transparent',
             color: activeTab === 'users' ? 'var(--accent-cyan)' : 'var(--text-muted)',
             fontWeight: 700,
@@ -1034,6 +1287,127 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
           <Terminal size={14} /> System Logs
         </button>
       </div>
+
+      {/* ----------------- TAB 0: CAMERA DISCOVERY & SETUP ----------------- */}
+      {activeTab === 'cameras' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Header Panel */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              gap: '12px'
+            }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Radio size={20} color="var(--accent-cyan)" />
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 800 }}>Network Camera Discovery & Setup</h3>
+                  <span className="hud-chip" style={{ color: 'var(--accent-cyan)' }}>
+                    {cameras.length} {cameras.length === 1 ? 'Camera' : 'Cameras'} Configured
+                  </span>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Locate ONVIF and RTSP video feeds across the local network, test streaming profiles, and bind cameras to the live surveillance matrix.
+                </p>
+              </div>
+
+              {onRefreshCameras && (
+                <button
+                  className="btn-glass"
+                  onClick={onRefreshCameras}
+                  style={{ fontSize: '0.76rem', padding: '6px 12px' }}
+                >
+                  <RefreshCw size={13} /> Refresh Cameras
+                </button>
+              )}
+            </div>
+
+            {/* Currently Configured Cameras Summary Cards */}
+            {cameras && cameras.length > 0 && (
+              <div style={{
+                marginTop: '16px',
+                paddingTop: '16px',
+                borderTop: '1px solid rgba(255, 255, 255, 0.08)'
+              }}>
+                <div style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-muted)', marginBottom: '10px', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  Configured Surveillance Cameras
+                </div>
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                  gap: '10px'
+                }}>
+                  {cameras.map(cam => (
+                    <div
+                      key={cam.id}
+                      style={{
+                        background: 'rgba(255, 255, 255, 0.03)',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        borderRadius: '10px',
+                        padding: '12px 14px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px'
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ fontWeight: 700, fontSize: '0.86rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span style={{
+                            width: '8px',
+                            height: '8px',
+                            borderRadius: '50%',
+                            background: cam.is_online ? 'var(--accent-emerald)' : '#fb7185',
+                            display: 'inline-block'
+                          }} />
+                          {cam.name}
+                        </div>
+                        <span style={{
+                          fontSize: '0.66rem',
+                          fontFamily: 'monospace',
+                          padding: '1px 5px',
+                          borderRadius: '4px',
+                          background: 'rgba(255, 255, 255, 0.06)',
+                          color: 'var(--text-muted)'
+                        }}>
+                          {cam.vendor || 'IP Cam'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.74rem', fontFamily: 'monospace', color: 'var(--accent-cyan)' }}>
+                        {cam.ip}:{cam.port || 554}
+                      </div>
+                      <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cam.main_stream_url}>
+                        {cam.main_stream_url}
+                      </div>
+                      {onOpenAiSettings && (
+                        <div style={{ marginTop: '4px', display: 'flex', justifyContent: 'flex-end' }}>
+                          <button
+                            className="btn-glass"
+                            onClick={() => onOpenAiSettings(cam)}
+                            style={{ fontSize: '0.68rem', padding: '3px 8px' }}
+                          >
+                            <Sliders size={11} /> Settings
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Embedded Network Scanner & Discovery Engine */}
+          <DiscoveryModal
+            embedded={true}
+            onCameraAdded={(newCam) => {
+              if (onCameraAdded) onCameraAdded(newCam);
+              if (onRefreshCameras) onRefreshCameras();
+            }}
+          />
+        </div>
+      )}
 
       {/* ----------------- TAB 1: STORAGE & DIRECTORIES ----------------- */}
       {activeTab === 'storage' && (
@@ -1749,7 +2123,7 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                   <input
                     type="text"
                     className="glass-input"
-                    value={settings.ai_vision.base_url || 'http://localhost:11434'}
+                    value={settings.ai_vision.base_url || 'http://host.docker.internal:11434'}
                     onChange={(e) => setSettings({
                       ...settings,
                       ai_vision: { ...settings.ai_vision, base_url: e.target.value }
@@ -1831,16 +2205,118 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
               />
             </div>
 
-            {/* Test Connection Button */}
-            <button
-              className="btn-glass"
-              onClick={handleTestAiVision}
-              disabled={isTestingVision}
-              style={{ borderColor: 'rgba(168, 85, 247, 0.4)', color: '#d8b4fe' }}
-            >
-              <Sparkles size={14} color="#a855f7" className={isTestingVision ? 'animate-spin' : ''} />
-              {isTestingVision ? 'Testing Vision API Connection...' : 'Test Vision API Live Connection'}
-            </button>
+            {/* AI Vision Self-Healing & Connectivity Diagnostics */}
+            <div style={{
+              marginTop: '20px',
+              padding: '16px',
+              background: 'rgba(255, 255, 255, 0.02)',
+              border: '1px solid rgba(255, 255, 255, 0.07)',
+              borderRadius: '12px',
+              marginBottom: '16px'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Activity size={16} color="var(--accent-cyan)" />
+                  <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-main)' }}>
+                    Self-Healing & Route Diagnostics
+                  </span>
+                </div>
+                {aiVisionHealth && (
+                  <span style={{
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    padding: '3px 10px',
+                    borderRadius: '20px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    background: (aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                    color: (aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? '#10b981' : '#f87171',
+                    border: `1px solid ${(aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                  }}>
+                    {(aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? <CheckCircle size={12} /> : <AlertTriangle size={12} />}
+                    {(aiVisionHealth.status === 'healthy' || aiVisionHealth.success) ? `Online (${aiVisionHealth.latency_ms ? `${aiVisionHealth.latency_ms}ms` : 'Healthy'})` : 'Offline / Failover Active'}
+                  </span>
+                )}
+              </div>
+
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: '1.5', marginBottom: '14px' }}>
+                Gawkr continuously monitors AI vision connectivity. If the local Ollama host restarts, stops, or changes network routes (such as Docker host changes or power cuts), Gawkr automatically probes host gateways, matches installed vision models, and ensures security events degrade gracefully to clean local neural summaries without raw connection error dumps.
+              </div>
+
+              {aiVisionHealth && (
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: '10px',
+                  marginBottom: '14px',
+                  fontSize: '0.76rem'
+                }}>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Active Endpoint</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)', marginTop: '2px', wordBreak: 'break-all' }}>
+                      {aiVisionHealth.endpoint || 'Unresolved (Host Offline)'}
+                    </div>
+                  </div>
+                  <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Selected Vision Model</div>
+                    <div style={{ fontFamily: 'var(--font-mono)', color: '#d8b4fe', marginTop: '2px' }}>
+                      {aiVisionHealth.active_model || 'None'}
+                    </div>
+                  </div>
+                  {aiVisionHealth.installed_models && aiVisionHealth.installed_models.length > 0 && (
+                    <div style={{ background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.04)', gridColumn: 'span 2' }}>
+                      <div style={{ color: 'var(--text-muted)', fontSize: '0.68rem', textTransform: 'uppercase' }}>Installed Host Models</div>
+                      <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-main)', marginTop: '2px' }}>
+                        {aiVisionHealth.installed_models.join(', ')}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  className="btn-glass"
+                  onClick={handleHealAiVision}
+                  disabled={isHealingVision}
+                  style={{ borderColor: 'rgba(6, 182, 212, 0.4)', color: 'var(--accent-cyan)' }}
+                >
+                  <RefreshCw size={14} className={isHealingVision ? 'animate-spin' : ''} />
+                  {isHealingVision ? 'Probing Routes & Healing...' : 'Run Diagnostics & Auto-Heal'}
+                </button>
+
+                <button
+                  className="btn-glass"
+                  onClick={handleTestAiVision}
+                  disabled={isTestingVision}
+                  style={{ borderColor: 'rgba(168, 85, 247, 0.4)', color: '#d8b4fe' }}
+                >
+                  <Sparkles size={14} color="#a855f7" className={isTestingVision ? 'animate-spin' : ''} />
+                  {isTestingVision ? 'Testing Live Connection...' : 'Test Vision API Live Connection'}
+                </button>
+              </div>
+
+              {healVisionResult && (
+                <div style={{
+                  marginTop: '12px',
+                  background: healVisionResult.success ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
+                  border: `1px solid ${healVisionResult.success ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+                  borderRadius: '8px',
+                  padding: '12px',
+                  fontSize: '0.8rem'
+                }}>
+                  <div style={{ fontWeight: 700, color: healVisionResult.success ? '#10b981' : '#f87171', marginBottom: '4px' }}>
+                    {healVisionResult.success ? '✓ Route Verified & Self-Healed Successfully' : '✗ Diagnostics & Auto-Heal Warning'}
+                  </div>
+                  <div style={{ color: 'var(--text-main)', lineHeight: '1.4' }}>
+                    {healVisionResult.success 
+                      ? `Successfully routed to ${healVisionResult.endpoint} (${healVisionResult.latency_ms}ms) with active model '${healVisionResult.active_model}'. ${healVisionResult.candidates_probed ? `Tested ${healVisionResult.candidates_probed} candidate routes.` : ''}`
+                      : healVisionResult.error || 'Could not establish connection to local Ollama. Automatic failover active.'}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Live Test Feedback Box */}
             {visionTestResult && (
@@ -2950,6 +3426,348 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
           </div>
         </div>
       )}
+      {/* ----------------- TAB: ACTIVE DETERRENCE & SENTRY AUTOMATION (FEATURE 5) ----------------- */}
+      {activeTab === 'deterrence' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Header Panel */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+              <div>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <ShieldAlert size={20} color="var(--accent-cyan)" />
+                  <span>Smart Perimeter Active Deterrence</span>
+                  <span style={{
+                    fontSize: '0.72rem',
+                    padding: '2px 8px',
+                    borderRadius: '5px',
+                    fontWeight: 700,
+                    background: settings.deterrence?.enabled ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                    color: settings.deterrence?.enabled ? '#34d399' : '#f87171',
+                    border: settings.deterrence?.enabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)'
+                  }}>
+                    {settings.deterrence?.enabled ? 'ARMED & ACTIVE' : 'STANDBY / DISABLED'}
+                  </span>
+                </h3>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  Automatically trigger Home Assistant floodlights, flashing strobe sirens, and high-priority alarms when people dwell in active detection zones past configurable thresholds.
+                </p>
+              </div>
+
+              {isAdmin && (
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button
+                    className="btn-glass"
+                    onClick={handleTestDeterrence}
+                    disabled={isTestingDeterrence}
+                    style={{ fontSize: '0.76rem', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Zap size={14} className={isTestingDeterrence ? 'animate-spin' : ''} color="var(--accent-cyan)" />
+                    <span>{isTestingDeterrence ? 'Firing Deterrence...' : 'Test Deterrence Trigger'}</span>
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={handleSave}
+                    disabled={isSaving}
+                    style={{ fontSize: '0.76rem', padding: '8px 16px' }}
+                  >
+                    <Save size={14} /> {isSaving ? 'Saving...' : 'Save Deterrence Config'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {deterrenceFeedback && (
+              <div style={{
+                marginTop: '14px',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                fontSize: '0.8rem',
+                background: deterrenceFeedback.success ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
+                color: deterrenceFeedback.success ? '#34d399' : '#f87171',
+                border: deterrenceFeedback.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)'
+              }}>
+                {deterrenceFeedback.message}
+              </div>
+            )}
+          </div>
+
+          {/* Cards Grid */}
+          <div className="control-panel-grid">
+            {/* Card 1: Loiter & Schedule Trigger Rules */}
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Activity size={18} color="var(--accent-cyan)" />
+                  <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>Perimeter Loitering Rules</span>
+                </div>
+                <div className="toggle-switch">
+                  <input
+                    type="checkbox"
+                    id="deterrence-armed-toggle"
+                    checked={settings.deterrence?.enabled ?? false}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, enabled: e.target.checked }
+                    })}
+                  />
+                  <label htmlFor="deterrence-armed-toggle"></label>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 600 }}>Loitering Dwell Threshold</label>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--accent-cyan)', fontWeight: 700 }}>
+                      {settings.deterrence?.loiter_threshold_seconds ?? 10} seconds
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="3"
+                    max="60"
+                    step="1"
+                    value={settings.deterrence?.loiter_threshold_seconds ?? 10}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, loiter_threshold_seconds: parseInt(e.target.value) }
+                    })}
+                    style={{ width: '100%', accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Trigger deterrence when a person remains in view longer than this duration.
+                  </div>
+                </div>
+
+                <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <label htmlFor="night-only-toggle" style={{ fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer' }}>
+                      Night-Only Sentry Mode
+                    </label>
+                    <input
+                      type="checkbox"
+                      id="night-only-toggle"
+                      checked={settings.deterrence?.night_only ?? true}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        deterrence: { ...settings.deterrence, night_only: e.target.checked }
+                      })}
+                      style={{ accentColor: 'var(--accent-cyan)' }}
+                    />
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '10px' }}>
+                    Only trigger active deterrence outside daylight hours to avoid nuisance daytime activations.
+                  </div>
+
+                  {settings.deterrence?.night_only && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                      <div>
+                        <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                          Start Hour (24h)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="23"
+                          className="glass-input"
+                          value={settings.deterrence?.night_start_hour ?? 22}
+                          onChange={(e) => setSettings({
+                            ...settings,
+                            deterrence: { ...settings.deterrence, night_start_hour: parseInt(e.target.value) || 0 }
+                          })}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '0.74rem', color: 'var(--text-muted)', display: 'block', marginBottom: '4px' }}>
+                          End Hour (24h)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          max="23"
+                          className="glass-input"
+                          value={settings.deterrence?.night_end_hour ?? 6}
+                          onChange={(e) => setSettings({
+                            ...settings,
+                            deterrence: { ...settings.deterrence, night_end_hour: parseInt(e.target.value) || 0 }
+                          })}
+                          style={{ width: '100%' }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '12px' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Deterrence Cooldown
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <input
+                      type="number"
+                      min="30"
+                      max="600"
+                      className="glass-input"
+                      value={settings.deterrence?.cooldown_seconds ?? 120}
+                      onChange={(e) => setSettings({
+                        ...settings,
+                        deterrence: { ...settings.deterrence, cooldown_seconds: parseInt(e.target.value) || 60 }
+                      })}
+                      style={{ width: '100px' }}
+                    />
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>seconds between deterrence triggers</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Card 2: Home Assistant Hardware & Scene Triggers */}
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                <Zap size={18} color="var(--accent-cyan)" />
+                <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>Home Assistant Sentry Actions</span>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Target Home Assistant Entity ID
+                  </label>
+                  <input
+                    type="text"
+                    className="glass-input"
+                    value={settings.deterrence?.ha_entity_id ?? 'light.front_porch'}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, ha_entity_id: e.target.value }
+                    })}
+                    placeholder="light.front_porch, switch.garden_floodlight, siren.alarm"
+                    style={{ width: '100%' }}
+                  />
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Entity in your Home Assistant instance to actuate upon perimeter breach.
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Service Call
+                  </label>
+                  <select
+                    className="glass-input"
+                    value={settings.deterrence?.ha_service ?? 'light.turn_on'}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, ha_service: e.target.value }
+                    })}
+                    style={{ width: '100%' }}
+                  >
+                    <option value="light.turn_on">light.turn_on (Floodlights / Porch Light)</option>
+                    <option value="switch.turn_on">switch.turn_on (Siren / Relay Switch)</option>
+                    <option value="scene.turn_on">scene.turn_on (Emergency Security Scene)</option>
+                  </select>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    id="ha-flash-toggle"
+                    checked={settings.deterrence?.ha_flash ?? true}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, ha_flash: e.target.checked }
+                    })}
+                    style={{ accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <label htmlFor="ha-flash-toggle" style={{ fontSize: '0.78rem', color: '#e2e8f0', cursor: 'pointer' }}>
+                    Flash / Strobe Lights (Flash count: {settings.deterrence?.ha_flash_count ?? 3} pulses)
+                  </label>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <input
+                    type="checkbox"
+                    id="crit-notif-toggle"
+                    checked={settings.deterrence?.critical_notification ?? true}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, critical_notification: e.target.checked }
+                    })}
+                    style={{ accentColor: 'var(--accent-cyan)' }}
+                  />
+                  <label htmlFor="crit-notif-toggle" style={{ fontSize: '0.78rem', color: '#e2e8f0', cursor: 'pointer' }}>
+                    Broadcast Critical Push Notification to Android / Web App
+                  </label>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Action Log Note
+                  </label>
+                  <input
+                    type="text"
+                    className="glass-input"
+                    value={settings.deterrence?.action_note ?? 'Automated Floodlight / Deterrence Triggered'}
+                    onChange={(e) => setSettings({
+                      ...settings,
+                      deterrence: { ...settings.deterrence, action_note: e.target.value }
+                    })}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div style={{
+                  padding: '10px 12px',
+                  background: 'rgba(6, 182, 212, 0.08)',
+                  borderRadius: '8px',
+                  fontSize: '0.72rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  <strong style={{ color: 'var(--accent-cyan)' }}>Home Assistant MQTT Auto-Discovery:</strong>
+                  <div>Publishes to <code>binary_sensor.gawkr_active_deterrence</code> and <code>homeassistant/deterrence/action</code> so Home Assistant automations can trigger natively without manual YAML configuration.</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Trigger History Log */}
+          {deterrenceStatus?.history && deterrenceStatus.history.length > 0 && (
+            <div className="glass-panel" style={{ borderRadius: '14px', padding: '20px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
+                <Terminal size={16} color="var(--accent-cyan)" />
+                <span style={{ fontWeight: 700, fontSize: '0.92rem' }}>Recent Deterrence Trigger Log</span>
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.78rem', textAlign: 'left' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>
+                      <th style={{ padding: '8px 12px' }}>Timestamp</th>
+                      <th style={{ padding: '8px 12px' }}>Camera</th>
+                      <th style={{ padding: '8px 12px' }}>Loiter Dwell</th>
+                      <th style={{ padding: '8px 12px' }}>Target Entity</th>
+                      <th style={{ padding: '8px 12px' }}>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deterrenceStatus.history.map((h, idx) => (
+                      <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                        <td style={{ padding: '8px 12px', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                          {new Date(h.timestamp * 1000).toLocaleString()}
+                        </td>
+                        <td style={{ padding: '8px 12px', fontWeight: 600 }}>{h.camera_name}</td>
+                        <td style={{ padding: '8px 12px', color: '#f59e0b' }}>{h.dwell_seconds}s</td>
+                        <td style={{ padding: '8px 12px', color: 'var(--accent-cyan)' }}>{h.target_entity}</td>
+                        <td style={{ padding: '8px 12px' }}>{h.action}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {/* ----------------- TAB 5: USERS & ACCESS MANAGEMENT ----------------- */}
       {activeTab === 'users' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
@@ -3076,6 +3894,389 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
             </div>
           )}
 
+          {/* 2FA Setup Dialog Modal */}
+          {is2faSetupOpen && twoFactorSetupData && (
+            <div className="modal-overlay" onClick={() => setIs2faSetupOpen(false)} style={{ zIndex: 1100 }}>
+              <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '460px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      background: 'rgba(6, 182, 212, 0.15)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <Smartphone size={16} color="var(--accent-cyan)" />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Enable Two-Factor Authentication</h3>
+                      <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Scan with Google Authenticator, Authy, or 1Password</p>
+                    </div>
+                  </div>
+                  <button className="btn-glass" onClick={() => setIs2faSetupOpen(false)} style={{ padding: '6px' }}><X size={15} /></button>
+                </div>
+
+                {twoFactorError && (
+                  <div style={{
+                    background: 'rgba(244, 63, 94, 0.12)',
+                    border: '1px solid rgba(244, 63, 94, 0.3)',
+                    color: '#fb7185',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    marginBottom: '14px'
+                  }}>
+                    {twoFactorError}
+                  </div>
+                )}
+
+                {twoFactorBackupCodes ? (
+                  <div>
+                    <div style={{
+                      textAlign: 'center',
+                      padding: '14px',
+                      background: 'rgba(16, 185, 129, 0.12)',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                      borderRadius: '10px',
+                      marginBottom: '16px'
+                    }}>
+                      <CheckCircle size={28} color="var(--accent-emerald)" style={{ margin: '0 auto 6px' }} />
+                      <div style={{ fontWeight: 700, color: '#fff', fontSize: '0.92rem' }}>2FA Activated Successfully!</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        Save your emergency backup recovery codes now. Each code can be used once if you lose your phone.
+                      </div>
+                    </div>
+
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr',
+                      gap: '8px',
+                      background: 'rgba(0, 0, 0, 0.4)',
+                      padding: '12px',
+                      borderRadius: '8px',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                      marginBottom: '14px',
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: '0.88rem',
+                      textAlign: 'center',
+                      fontWeight: 700,
+                      color: 'var(--accent-cyan)'
+                    }}>
+                      {twoFactorBackupCodes.map((code, idx) => (
+                        <div key={idx} style={{ padding: '4px', background: 'rgba(255, 255, 255, 0.03)', borderRadius: '4px' }}>
+                          {code}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '14px' }}>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        style={{ flex: 1, justifyContent: 'center', fontSize: '0.76rem' }}
+                        onClick={() => {
+                          navigator.clipboard.writeText(twoFactorBackupCodes.join('\n'));
+                          alert('✓ Backup codes copied to clipboard!');
+                        }}
+                      >
+                        <Copy size={13} /> Copy Codes
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        style={{ flex: 1, justifyContent: 'center', fontSize: '0.76rem' }}
+                        onClick={() => {
+                          const blob = new Blob([`GAWKR NVR EMERGENCY BACKUP CODES\nAccount: ${activeUser.username}\nGenerated: ${new Date().toISOString()}\n\n` + twoFactorBackupCodes.join('\n')], { type: 'text/plain' });
+                          const a = document.createElement('a');
+                          a.href = URL.createObjectURL(blob);
+                          a.download = `gawkr_2fa_backup_codes_${activeUser.username}.txt`;
+                          a.click();
+                        }}
+                      >
+                        <Download size={13} /> Download .txt
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      style={{ width: '100%', justifyContent: 'center' }}
+                      onClick={() => setIs2faSetupOpen(false)}
+                    >
+                      Done & Close
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleConfirm2faEnable}>
+                    <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+                      <div style={{
+                        display: 'inline-block',
+                        padding: '10px',
+                        background: '#030712',
+                        borderRadius: '12px',
+                        border: '1px solid rgba(6, 182, 212, 0.3)',
+                        boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+                        marginBottom: '10px'
+                      }}>
+                        <img
+                          src={twoFactorSetupData.qr_code_data_url}
+                          alt="2FA QR Code"
+                          style={{ width: '160px', height: '160px', display: 'block', borderRadius: '6px' }}
+                        />
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        Can't scan? Manual entry key:
+                      </div>
+                      <div style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.82rem',
+                        fontWeight: 700,
+                        color: 'var(--accent-cyan)',
+                        letterSpacing: '0.1em',
+                        marginTop: '2px',
+                        userSelect: 'all'
+                      }}>
+                        {twoFactorSetupData.secret}
+                      </div>
+                    </div>
+
+                    <div style={{ marginBottom: '16px' }}>
+                      <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px', textAlign: 'center' }}>
+                        Enter 6-digit confirmation code from your app:
+                      </label>
+                      <input
+                        type="text"
+                        autoFocus
+                        placeholder="123456"
+                        maxLength={6}
+                        className="glass-input"
+                        value={twoFactorCode}
+                        onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, ''))}
+                        style={{
+                          textAlign: 'center',
+                          fontSize: '1.25rem',
+                          fontFamily: 'var(--font-mono)',
+                          fontWeight: 700,
+                          letterSpacing: '0.2em',
+                          color: 'var(--accent-cyan)'
+                        }}
+                        required
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                      <button
+                        type="button"
+                        className="btn-glass"
+                        onClick={() => setIs2faSetupOpen(false)}
+                        disabled={is2faLoading}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="btn-primary"
+                        disabled={is2faLoading || twoFactorCode.length < 6}
+                      >
+                        <ShieldCheck size={14} /> {is2faLoading ? 'Verifying...' : 'Activate 2FA'}
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* 2FA Disable Confirmation Modal */}
+          {is2faDisableOpen && (
+            <div className="modal-overlay" onClick={() => setIs2faDisableOpen(false)} style={{ zIndex: 1100 }}>
+              <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '8px',
+                      background: 'rgba(244, 63, 94, 0.15)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center'
+                    }}>
+                      <Lock size={16} color="#fb7185" />
+                    </div>
+                    <div>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Disable Two-Factor Auth</h3>
+                      <p style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>Confirm your password to turn off 2FA</p>
+                    </div>
+                  </div>
+                  <button className="btn-glass" onClick={() => setIs2faDisableOpen(false)} style={{ padding: '6px' }}><X size={15} /></button>
+                </div>
+
+                {twoFactorError && (
+                  <div style={{
+                    background: 'rgba(244, 63, 94, 0.12)',
+                    border: '1px solid rgba(244, 63, 94, 0.3)',
+                    color: '#fb7185',
+                    padding: '10px 12px',
+                    borderRadius: '8px',
+                    fontSize: '0.8rem',
+                    marginBottom: '14px'
+                  }}>
+                    {twoFactorError}
+                  </div>
+                )}
+
+                <form onSubmit={handleDisable2fa}>
+                  <div style={{ marginBottom: '16px' }}>
+                    <label style={{ fontSize: '0.76rem', color: 'var(--text-muted)', display: 'block', marginBottom: '6px' }}>
+                      Account Password
+                    </label>
+                    <input
+                      type="password"
+                      autoFocus
+                      className="glass-input"
+                      placeholder="Enter your current password"
+                      value={twoFactorDisablePassword}
+                      onChange={(e) => setTwoFactorDisablePassword(e.target.value)}
+                      required
+                    />
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      className="btn-glass"
+                      onClick={() => setIs2faDisableOpen(false)}
+                      disabled={is2faLoading}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="btn-primary"
+                      style={{ background: '#e11d48' }}
+                      disabled={is2faLoading || !twoFactorDisablePassword}
+                    >
+                      {is2faLoading ? 'Disabling...' : 'Confirm Disable 2FA'}
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Two-Factor Authentication Security Card */}
+          <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div style={{
+                  width: '40px',
+                  height: '40px',
+                  borderRadius: '10px',
+                  background: twoFactorStatus?.is_totp_enabled ? 'rgba(16, 185, 129, 0.15)' : 'rgba(6, 182, 212, 0.15)',
+                  border: twoFactorStatus?.is_totp_enabled ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(6, 182, 212, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center'
+                }}>
+                  <Smartphone size={22} color={twoFactorStatus?.is_totp_enabled ? 'var(--accent-emerald)' : 'var(--accent-cyan)'} />
+                </div>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <h3 style={{ fontSize: '0.98rem', fontWeight: 700 }}>Two-Factor Authentication (TOTP)</h3>
+                    {twoFactorStatus?.is_totp_enabled ? (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        background: 'rgba(16, 185, 129, 0.15)',
+                        border: '1px solid rgba(16, 185, 129, 0.3)',
+                        color: 'var(--accent-emerald)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        fontWeight: 700
+                      }}>
+                        ✓ Active & Protected
+                      </span>
+                    ) : (
+                      <span style={{
+                        fontSize: '0.7rem',
+                        background: 'rgba(245, 158, 11, 0.15)',
+                        border: '1px solid rgba(245, 158, 11, 0.3)',
+                        color: 'var(--accent-amber)',
+                        padding: '2px 8px',
+                        borderRadius: '6px',
+                        fontWeight: 700
+                      }}>
+                        Inactive
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    Secure your account with time-based 6-digit one-time codes from Google Authenticator, Microsoft Authenticator, Apple Passwords, or 1Password.
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                {twoFactorStatus?.is_totp_enabled ? (
+                  <button
+                    className="btn-glass"
+                    onClick={() => { setIs2faDisableOpen(true); setTwoFactorDisablePassword(''); setTwoFactorError(''); }}
+                    style={{ color: '#fb7185', borderColor: 'rgba(244, 63, 94, 0.3)', fontSize: '0.8rem' }}
+                  >
+                    <Lock size={14} /> Disable 2FA
+                  </button>
+                ) : (
+                  <button
+                    className="btn-primary"
+                    onClick={handleOpen2faSetup}
+                    disabled={is2faLoading}
+                    style={{ fontSize: '0.8rem' }}
+                  >
+                    <Smartphone size={14} /> {is2faLoading ? 'Loading Setup...' : 'Enable 2FA Protection'}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {twoFactorFeedback && (
+              <div style={{
+                marginTop: '14px',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                background: 'rgba(16, 185, 129, 0.12)',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+                color: 'var(--accent-emerald)',
+                fontSize: '0.8rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <CheckCircle size={15} /> {twoFactorFeedback}
+              </div>
+            )}
+
+            {twoFactorStatus?.is_totp_enabled && (
+              <div style={{
+                marginTop: '14px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '8px',
+                padding: '10px 14px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: '0.75rem',
+                color: 'var(--text-muted)'
+              }}>
+                <span>Offline Emergency Backup Codes: <b style={{ color: '#fff' }}>{twoFactorStatus.backup_codes_count}</b> remaining</span>
+                <span style={{ fontSize: '0.72rem', color: 'var(--accent-cyan)' }}>Single-use recovery supported</span>
+              </div>
+            )}
+          </div>
+
           <div style={{ display: 'grid', gridTemplateColumns: isAdmin ? 'minmax(0, 1.8fr) minmax(0, 1.2fr)' : '1fr', gap: '20px' }}>
             {/* Users Table Card */}
             <div className="glass-panel" style={{ borderRadius: '14px', padding: '22px' }}>
@@ -3115,6 +4316,7 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                       <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: 'var(--text-muted)' }}>
                         <th style={{ padding: '10px 8px', fontWeight: 600 }}>User</th>
                         <th style={{ padding: '10px 8px', fontWeight: 600 }}>Role</th>
+                        <th style={{ padding: '10px 8px', fontWeight: 600 }}>2FA Security</th>
                         <th style={{ padding: '10px 8px', fontWeight: 600 }}>Registered</th>
                         <th style={{ padding: '10px 8px', fontWeight: 600, textAlign: 'right' }}>Actions</th>
                       </tr>
@@ -3197,6 +4399,35 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                               )}
                             </td>
 
+                            <td style={{ padding: '12px 8px' }}>
+                              {u.is_totp_enabled ? (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  background: 'rgba(16, 185, 129, 0.15)',
+                                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                                  color: 'var(--accent-emerald)',
+                                  padding: '2px 7px',
+                                  borderRadius: '4px',
+                                  fontSize: '0.70rem',
+                                  fontWeight: 700
+                                }}>
+                                  <Check size={11} /> Active
+                                </span>
+                              ) : (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  color: 'var(--text-muted)',
+                                  fontSize: '0.70rem',
+                                  padding: '2px 7px'
+                                }}>
+                                  Disabled
+                                </span>
+                              )}
+                            </td>
+
                             <td style={{ padding: '12px 8px', color: 'var(--text-muted)', fontSize: '0.74rem' }}>
                               {u.created_at ? new Date(u.created_at * 1000).toLocaleDateString() : 'System Default'}
                             </td>
@@ -3212,6 +4443,23 @@ export default function ControlPanel({ isAdmin, currentUser, initialMemoryData, 
                                     style={{ padding: '4px 8px', fontSize: '0.72rem', gap: '4px' }}
                                   >
                                     <Key size={12} color="var(--accent-cyan)" /> Reset Pass
+                                  </button>
+                                )}
+
+                                {/* Admin Reset 2FA */}
+                                {isAdmin && u.is_totp_enabled && (
+                                  <button
+                                    className="btn-glass"
+                                    onClick={() => handleAdminReset2fa(u.username)}
+                                    title={`Reset and disable 2FA for ${u.username}`}
+                                    style={{
+                                      padding: '4px 8px',
+                                      fontSize: '0.72rem',
+                                      color: '#fb7185',
+                                      borderColor: 'rgba(244, 63, 94, 0.3)'
+                                    }}
+                                  >
+                                    Reset 2FA
                                   </button>
                                 )}
 

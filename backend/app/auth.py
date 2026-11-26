@@ -2,8 +2,14 @@ import time
 import hashlib
 import hmac
 import re
+import io
+import base64
+import secrets
+import json
 import jwt
-from typing import Optional
+import pyotp
+import qrcode
+from typing import Optional, List, Tuple
 from fastapi import HTTPException, Security, Depends, Request, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from app.config import (
@@ -25,15 +31,64 @@ def authenticate_user(username: str, password: str) -> dict:
         return None
     return user
 
+def extract_client_ip(request: Optional[Request]) -> str:
+    """Extracts client IP prioritizing Cloudflare and reverse-proxy edge headers:
+    1. CF-Connecting-IP (Cloudflare canonical edge client IP)
+    2. True-Client-IP (Cloudflare Enterprise / Akamai client IP)
+    3. X-Real-IP (direct reverse proxy header)
+    4. X-Forwarded-For (rightmost trusted proxy in chain)
+    5. Direct socket client host fallback
+    """
+    if not request:
+        return "127.0.0.1"
+
+    # 1. Cloudflare canonical edge header
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip and cf_ip.strip():
+        candidate = cf_ip.split(",")[0].strip()
+        if candidate:
+            return candidate
+
+    # 2. True-Client-IP header
+    true_ip = request.headers.get("true-client-ip")
+    if true_ip and true_ip.strip():
+        candidate = true_ip.split(",")[0].strip()
+        if candidate:
+            return candidate
+
+    # 3. Direct real IP from reverse proxy
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        candidate = real_ip.split(",")[0].strip()
+        if candidate:
+            return candidate
+
+    # 4. Standard proxy forwarded header (take rightmost trusted proxy in chain)
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
+
+    # 5. Socket client host fallback
+    if getattr(request, "client", None) and request.client.host:
+        return request.client.host.strip()
+
+    return "127.0.0.1"
+
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
     expire = time.time() + (ACCESS_TOKEN_EXPIRE_MINUTES * 60)
-    to_encode.update({"exp": expire})
+    to_encode["exp"] = expire
+    to_encode["typ"] = "access"
     return jwt.encode(to_encode, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
-def decode_access_token(token: str) -> dict:
+def decode_access_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        # Strictly enforce token type: reject any token where typ != "access"
+        if payload.get("typ") != "access":
+            return None
         return payload
     except jwt.PyJWTError:
         return None
@@ -64,6 +119,87 @@ def verify_stream_ticket(ticket: str, camera_id: str) -> bool:
         return True
     except jwt.PyJWTError:
         return False
+
+# ----------------- 2FA / TOTP HELPERS -----------------
+
+def create_2fa_challenge_token(username: str, role: str) -> str:
+    """Generates a short-lived token (5 min) specifically for completing 2FA."""
+    expire = int(time.time() + 300)
+    payload = {
+        "sub": username,
+        "role": role,
+        "exp": expire,
+        "typ": "2fa_challenge"
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def verify_2fa_challenge_token(challenge_token: str) -> Optional[dict]:
+    """Verifies that the challenge token is valid and of type '2fa_challenge'."""
+    if not challenge_token:
+        return None
+    try:
+        payload = jwt.decode(challenge_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("typ") != "2fa_challenge":
+            return None
+        if payload.get("exp", 0) < time.time():
+            return None
+        return payload
+    except jwt.PyJWTError:
+        return None
+
+def generate_totp_secret() -> str:
+    return pyotp.random_base32()
+
+def generate_totp_qr_data_url(username: str, secret: str, issuer_name: str = "Gawkr NVR") -> Tuple[str, str]:
+    totp = pyotp.TOTP(secret)
+    provisioning_uri = totp.provisioning_uri(name=username, issuer_name=issuer_name)
+    
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=6,
+        border=2,
+    )
+    qr.add_data(provisioning_uri)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#06b6d4", back_color="#030712")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64_img = base64.b64encode(buf.getvalue()).decode()
+    data_url = f"data:image/png;base64,{b64_img}"
+    return provisioning_uri, data_url
+
+def verify_totp_code(secret: str, code: str) -> bool:
+    if not secret or not code:
+        return False
+    cleaned = code.strip().replace(" ", "").replace("-", "")
+    totp = pyotp.TOTP(secret)
+    return bool(totp.verify(cleaned, valid_window=1))
+
+def generate_backup_codes(count: int = 8) -> Tuple[List[str], List[str]]:
+    plain_codes = []
+    hashed_codes = []
+    for _ in range(count):
+        code = f"{secrets.token_hex(2).upper()}-{secrets.token_hex(2).upper()}"
+        plain_codes.append(code)
+        hashed_codes.append(hashlib.sha256(code.encode()).hexdigest())
+    return plain_codes, hashed_codes
+
+def verify_and_consume_backup_code(username: str, code: str) -> bool:
+    user = storage.get_user_by_username(username)
+    if not user or not user.get("backup_codes"):
+        return False
+    try:
+        stored_hashes = json.loads(user["backup_codes"])
+    except Exception:
+        return False
+    cleaned = code.strip().upper()
+    code_hash = hashlib.sha256(cleaned.encode()).hexdigest()
+    if code_hash in stored_hashes:
+        stored_hashes.remove(code_hash)
+        storage.update_user_backup_codes(username, json.dumps(stored_hashes))
+        return True
+    return False
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security_scheme)) -> dict:
     if not credentials:

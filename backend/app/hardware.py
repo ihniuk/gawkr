@@ -8,14 +8,14 @@ from typing import Dict, Any, List
 _cached_hardware_info: Dict[str, Any] = {}
 _cache_timestamp: float = 0.0
 
-def detect_hardware_capabilities() -> Dict[str, Any]:
+def detect_hardware_capabilities(force_refresh: bool = False) -> Dict[str, Any]:
     """
     Detects host CPU cores, NVIDIA GPU presence, driver versions, and available FFmpeg hardware encoders/decoders.
-    Caches results for 60 seconds to avoid repeated process calls.
+    Caches results for 10 minutes to avoid repeated process calls and eliminate Control Panel latency.
     """
     global _cached_hardware_info, _cache_timestamp
     now = time.time()
-    if _cached_hardware_info and (now - _cache_timestamp < 60.0):
+    if not force_refresh and _cached_hardware_info and (now - _cache_timestamp < 600.0):
         return _cached_hardware_info
 
     cpu_cores = os.cpu_count() or 4
@@ -76,7 +76,18 @@ def detect_hardware_capabilities() -> Dict[str, Any]:
         except Exception:
             pass
 
-    has_nvenc = "h264_nvenc" in available_encoders and nvidia_info["available"]
+    has_nvenc = False
+    if "h264_nvenc" in available_encoders and nvidia_info["available"]:
+        try:
+            chk = subprocess.run(
+                ['ffmpeg', '-f', 'lavfi', '-i', 'testsrc=duration=0.01:size=64x64:rate=10', '-c:v', 'h264_nvenc', '-f', 'null', '-'],
+                capture_output=True,
+                timeout=2
+            )
+            has_nvenc = (chk.returncode == 0)
+        except Exception:
+            has_nvenc = False
+
     has_nvdec = "h264_cuvid" in available_decoders and nvidia_info["available"]
     has_qsv = "h264_qsv" in available_encoders
     has_x264 = "libx264" in available_encoders
