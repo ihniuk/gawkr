@@ -2,7 +2,7 @@
 
 > *"Having a gawk so you don't have to."*
 
-A high-speed, hardware-accelerated local Network Video Recorder (NVR) with real-time AI object identification, spatial motion tracking (no endless alerts for stationary project cars!), multimodal Gemini Vision event descriptions, Telegram notifications, and a sleek glassmorphic dashboard.
+A high-speed, hardware-accelerated local Network Video Recorder (NVR) with real-time AI object identification, spatial motion tracking (no endless alerts for stationary project cars!), multimodal AI event descriptions, multi platform notifications, and a sleek glass-morphic dashboard.
 
 ---
 
